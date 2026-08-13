@@ -47,8 +47,10 @@ function AgentUI({ session }: { session: UseSessionReturn }) {
     }
   };
 
-  const handleDisconnect = async () => {
-    await session.end();
+  // AgentDisconnectButton already calls session.end(). Calling it here as
+  // well caused duplicate token refreshes and disconnect operations.
+  const handleDisconnect = () => {
+    setError(null);
   };
 
   return (

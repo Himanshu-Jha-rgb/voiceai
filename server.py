@@ -23,8 +23,12 @@ app.add_middleware(
 
 
 @app.get("/token")
-async def get_token(room_name: str = "school-voice-room", participant_name: str | None = None):
+async def get_token(room_name: str | None = None, participant_name: str | None = None):
     """Generate a LiveKit access token for the frontend to join a room."""
+    # A completed agent session is not reused by LiveKit's React useSession
+    # hook. Give each browser call a fresh room unless a caller deliberately
+    # requests a named room (for example, an externally orchestrated session).
+    room_name = room_name or f"school-voice-{uuid.uuid4().hex[:12]}"
     if participant_name is None:
         participant_name = f"user-{uuid.uuid4().hex[:8]}"
 
@@ -48,7 +52,9 @@ async def get_token(room_name: str = "school-voice-room", participant_name: str 
 @app.post("/token")
 async def post_token(body: dict):
     """POST /token endpoint compatible with LiveKit TokenSource.endpoint()."""
-    room_name = body.get("room_name", "school-voice-room")
+    # useSession refreshes the token after `end()` specifically so the next
+    # connection can join a new room and receive a new agent dispatch.
+    room_name = body.get("room_name") or f"school-voice-{uuid.uuid4().hex[:12]}"
     participant_name = body.get("participant_name") or f"user-{uuid.uuid4().hex[:8]}"
 
     token = api.AccessToken(
