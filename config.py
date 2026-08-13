@@ -79,14 +79,17 @@ BACKCHANNEL_BOUNDARY_END = (
     1.5  # suppress interruptions 1.5s before agent ends (was 2.0s)
 )
 
-# ── Language hysteresis (REAL — not fake) ─────────────────────────────────────
-# Requires the same language across N consecutive *meaningful* turns before
-# switching TTS websocket.  Short/filler transcripts are completely ignored.
-LANG_SWITCH_MIN_CHARS = (
-    25  # ignore language switch if transcript < 25 characters (was 5)
-)
-LANG_SWITCH_MIN_CONFIDENCE = 0.8  # reserved for future STT confidence field
-LANG_SWITCH_CONSECUTIVE = 3  # require same language for 3 consecutive turns (was 2)
+# ── Confirmed language policy ──────────────────────────────────────────────────
+# "policy" keeps speech stable with confirmed/pending state. "sarvam" speaks
+# the language Sarvam detects for each supported turn immediately.
+LANGUAGE_SWITCH_MODE = os.getenv("LANGUAGE_SWITCH_MODE", "policy").strip().lower()
+if LANGUAGE_SWITCH_MODE not in {"policy", "sarvam"}:
+    raise ValueError("LANGUAGE_SWITCH_MODE must be either 'policy' or 'sarvam'")
+
+# Sarvam detects each utterance, while this policy decides when that detection
+# becomes the language used for speech synthesis.
+LANGUAGE_LONG_TURN_WORD_COUNT = 5
+LANGUAGE_SHORT_TURNS_REQUIRED = 2
 
 # ── Filler detection (for language tracking only) ─────────────────────────────
 # These patterns are NOT used to suppress responses — the LLM always sees
@@ -172,5 +175,3 @@ SLIDING_WINDOW_TURNS = 10  # number of most-recent turns kept verbatim
 # ENDPOINTING_ALPHA = 0.9
 # BACKCHANNEL_BOUNDARY_START = 1.0
 # BACKCHANNEL_BOUNDARY_END = 3.5
-# LANG_SWITCH_MIN_CHARS = 25
-# LANG_SWITCH_CONSECUTIVE = 4

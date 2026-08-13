@@ -17,14 +17,11 @@ Browser ──WebRTC──▶ LiveKit Cloud (BVC noise cancellation)
               → auto-detects language, ~70ms latency
                         │
                         ▼
-              FillerFilter (suppress "hmm", "uh", etc. — no LLM/TTS)
-                        │
-                        ▼
               TranscriptDedup (text hash + time window — drop repeated finals)
                         │
                         ▼
-              LanguageTracker (REAL hysteresis: 3 consecutive turns, ≥15 chars)
-              → NO websocket teardown during pending state
+              LanguagePolicy (confirmed TTS language + pending short turns)
+              → explicit / >5-word turn switches immediately; 2 short turns confirm
                         │
                         ▼
               LLM (Sarvam / OpenAI / Groq — configurable via LLM_PROVIDER)
@@ -77,7 +74,7 @@ Exposes port 7860. Startup runs both `agent.py start` (background) and `uvicorn 
 |------|---------|
 | `agent.py` | LiveKit TTS adapter, `TTSSessionManager`, `MultilingualTTS`, `SchoolVoiceAgent`, and `entrypoint` |
 | `voice_agent/providers.py` | Provider validation plus Sarvam/OpenAI/Groq LLM and Sarvam STT factories |
-| `voice_agent/conversation.py` | `FillerFilter`, `LanguageTracker`, and `TranscriptDedup` |
+| `voice_agent/conversation.py` | `LanguagePolicy`, explicit-request detection, filler helpers, and `TranscriptDedup` |
 | `voice_agent/telemetry.py` | Optional Langfuse client configuration |
 | `server.py` | FastAPI: GET/POST `/token` (LiveKit JWT), SPA static file serving |
 | `config.py` | `LanguageConfig` dataclass, 11 languages, STT/TTS/LLM/endpointing/hysteresis/filler constants |
@@ -153,26 +150,27 @@ Centralized owner of all TTS websocket lifecycle. Design invariants:
 ### TranscriptDedup (`voice_agent/conversation.py`)
 Deduplicates final transcript events via MD5 text hashing + configurable time window. Prevents repeated STT finals from triggering duplicate LLM/TTS cycles.
 
-### Language detection flow (with REAL hysteresis)
+### Language detection flow (confirmed-language policy)
 1. STT runs with `language="unknown"` — Sarvam auto-detects
 2. `user_input_transcribed` event stores detected language as `_detected_language`
-3. `on_user_turn_completed` checks `FillerFilter.is_filler(transcript)` — **filler → skip entirely**
-4. `TranscriptDedup.is_duplicate(transcript)` — **duplicate → skip**
-5. `LanguageTracker.record_turn()` records the detection (fillers record as "no decision")
-6. `LanguageTracker.should_switch()` requires **3 consecutive meaningful turns** (≥15 chars) in the same new language
-7. Until hysteresis confirms: keep current TTS websocket warm, no teardown
-8. Single-turn language mismatches: respond in detected language but **keep old TTS instance alive**
+3. `TranscriptDedup.is_duplicate(transcript)` drops repeated finals
+4. `LanguagePolicy` uses the detected language only to update `confirmed_lang`
+5. An explicit language request or a turn longer than five words switches immediately
+6. Two consecutive short turns in the same new language switch; alternating short turns reset the pending count
+7. TTS always speaks `confirmed_lang`, never the raw per-turn detection
 
 ### Filler suppression
 - `FillerFilter.is_filler()` checks: length < 4, exact match against 30+ filler patterns, or single/dual-word very-short utterances
 - When filler detected: **no LLM generation, no TTS, no state transition, no language recording**
 - Patterns include: hmm, uh, okay, haan, ji, kya, nahi, achha, theek hai, etc.
 
-### LanguageTracker (real hysteresis)
-- `LANG_SWITCH_MIN_CHARS = 15` — transcript must be ≥15 characters to count as meaningful
-- `LANG_SWITCH_CONSECUTIVE = 3` — same candidate language required for 3 consecutive meaningful turns
-- Short/filler utterances recorded as "no decision" (breaks any in-progress streak)
-- Flip-flopping languages (en→ta→en) never triggers a switch
+### LanguagePolicy
+- `confirmed_lang` is the persistent TTS language for the session.
+- Explicit requests switch immediately.
+- A detection from a turn with more than five words switches immediately.
+- Otherwise, two consecutive short turns in the same new language are required.
+- Flip-flopping languages (en→ta→en) resets the pending candidate and never switches.
+- `LANGUAGE_SWITCH_MODE=policy` is the default. Set it to `sarvam` to bypass this policy and use Sarvam's per-turn detection directly for TTS.
 
 ### Turn detection
 - `AgentSession(vad=silero.VAD.load())` — Silero VAD for reliable speech detection
@@ -266,7 +264,7 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com  # optional
 ## Design decisions
 
 - **Supported Sarvam lifecycle** — `TTSSessionManager` uses only `prewarm()`, `stream()`, and `aclose()`. Sarvam plugin v1.6.4 owns cancellation and its WebSocket pool, so there is no brittle private-field access.
-- **Real hysteresis (not fake)** — `LanguageTracker` requires 3 consecutive meaningful turns (≥15 chars) in the same language before switching TTS websockets. Fillers and short utterances break the streak. No websocket teardown during pending state.
+- **Confirmed-language switching** — `LanguagePolicy` ensures TTS never follows a raw one-turn detection. Explicit requests and long turns switch immediately; two matching short turns are required otherwise.
 - **Filler suppression** — Utterances matching 30+ filler patterns or shorter than 4 characters are dropped entirely: no LLM, no TTS, no state transition. Eliminates spurious "Hmm" → full pipeline activation.
 - **Transcript deduplication** — `TranscriptDedup` uses MD5 hashing + time window to prevent repeated STT finals from triggering duplicate LLM/TTS cycles.
 - **Two-layer context** — Rolling summarization of older turns (async, background) + sliding window of recent turns. Maintains long conversation context without unbounded growth.

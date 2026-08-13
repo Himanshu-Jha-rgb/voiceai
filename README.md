@@ -173,9 +173,16 @@ All languages use the `shubh` speaker from Sarvam Bulbul v3.
 2. `user_input_transcribed` event stores the detected language code
 3. `FillerFilter` drops filler utterances ("hmm", "uh", "ji") — no LLM/TTS triggered
 4. `TranscriptDedup` prevents repeated STT finals from duplicate processing
-5. `LanguageTracker` applies **real hysteresis**: requires 3 consecutive meaningful turns (min 25 chars) in the same new language before switching TTS
-6. Until hysteresis confirms: current TTS websocket stays warm — no teardown
-7. Single-turn language mismatches: respond in detected language but keep old TTS instance alive
+5. `LanguagePolicy` keeps a persistent `confirmed_lang`; TTS always uses that language, never the raw per-turn detection
+6. A direct request (for example, “speak English” or “हिंदी में बोलो”) switches immediately; a turn longer than 5 words also switches immediately
+7. Short detections require two consecutive turns in the same new language; alternating languages reset the pending count
+
+Set `LANGUAGE_SWITCH_MODE` in `.env` to choose the switching strategy:
+
+| Value | Behavior |
+|---|---|
+| `policy` (default) | Uses `confirmed_lang`: explicit requests and long turns switch immediately; short turns require two matching detections. |
+| `sarvam` | TTS immediately uses Sarvam's supported per-turn detected language. |
 8. Transcripts are published to the frontend via LiveKit data channel for real-time chat display
 
 ## LLM Providers

@@ -24,6 +24,7 @@ from langfuse.types import TraceContext
 from config import (
     LANGUAGE_CODE_MAP,
     DEFAULT_LANGUAGE,
+    LANGUAGE_SWITCH_MODE,
     STT_MODEL,
     LLM_MODEL,
     LLM_PROVIDER,
@@ -50,13 +51,6 @@ from config import (
     INTERRUPTION_MIN_DURATION,
     BACKCHANNEL_BOUNDARY_START,
     BACKCHANNEL_BOUNDARY_END,
-    # Language hysteresis
-    LANG_SWITCH_MIN_CHARS,
-    LANG_SWITCH_MIN_CONFIDENCE,
-    LANG_SWITCH_CONSECUTIVE,
-    # Filler suppression
-    FILLER_MIN_LENGTH,
-    FILLER_PATTERNS,
     # Transcript dedup
     DEDUP_WINDOW_SECONDS,
     DEDUP_MAX_HISTORY,
@@ -74,7 +68,7 @@ from utils.tools import (
     active_turn_span_var,
 )
 from utils.summarize import summarize_conversation
-from voice_agent.conversation import FillerFilter, LanguageTracker, TranscriptDedup
+from voice_agent.conversation import LanguagePolicy, TranscriptDedup
 from voice_agent.providers import active_model, create_llm, create_stt
 from voice_agent.telemetry import create_langfuse_client
 
@@ -321,12 +315,7 @@ class SchoolVoiceAgent(Agent):
         self._detected_transcript: str = ""
         self._transcript_dedup = TranscriptDedup(DEDUP_WINDOW_SECONDS, DEDUP_MAX_HISTORY)
 
-        # Language-hysteresis tracker with REAL thresholds
-        self._lang_tracker = LanguageTracker(
-            default_language="hi-IN",
-            min_chars=LANG_SWITCH_MIN_CHARS,
-            consecutive_required=LANG_SWITCH_CONSECUTIVE,
-        )
+        self._language_policy = LanguagePolicy(confirmed_lang="hi-IN")
 
         # Tracked background tasks — bounded concurrency, cleanup-aware
         self._bg_tasks: set[asyncio.Task] = set()
@@ -392,70 +381,58 @@ class SchoolVoiceAgent(Agent):
             f"transcript: {transcript[:60]!r} ({transcript_length} chars)"
         )
 
-        # ── Step 1: Filler check (for language tracking only) ────────────────
-        # Fillers still go to LLM/TTS — the agent can respond naturally.
-        # But fillers must NOT influence language detection, otherwise a
-        # stray "hmm" gets recorded as Bengali and triggers a language switch.
-        is_filler = FillerFilter.is_filler(transcript)
-        lang_for_tracker = None if is_filler else self._detected_language
-        if is_filler:
-            logger.debug(
-                f"Filler detected: {transcript!r} — skipping language tracking"
+        previous_language = self._tts_session.current_language
+        if LANGUAGE_SWITCH_MODE == "sarvam":
+            # Direct mode delegates language choice to Sarvam's per-turn STT
+            # detection, while preserving the current language for unknown or
+            # unsupported results.
+            target_language = (
+                self._detected_language
+                if self._detected_language in LANGUAGE_CODE_MAP
+                else previous_language
             )
+            decision_reason = "sarvam_per_turn"
+            pending_count = 0
+            switched = target_language != previous_language
+        else:
+            # Policy mode: Sarvam detects every turn, but the policy decides
+            # when that result becomes the persistent TTS language.
+            decision = self._language_policy.decide(self._detected_language, transcript)
+            target_language = decision.confirmed_lang
+            decision_reason = decision.reason
+            pending_count = decision.pending_count
+            switched = decision.switched
 
-        # ── Step 2: Record turn in hysteresis tracker ───────────────────────
-        self._lang_tracker.record_turn(lang_for_tracker, transcript_length)
-
-        # ── Step 3: Decide language — real hysteresis only ──────────────────
-        target_language = self._tts_session.current_language
-        switch_to = self._lang_tracker.should_switch(target_language)
-
-        if switch_to:
-            # Hysteresis confirmed — permanent switch.
-            # Pools are NEVER invalidated; all languages stay warm.
+        if switched:
             langfuse_client.create_event(
                 name="language-switch",
                 trace_context=trace_context(self._session_trace_id, self._active_turn_span_id),
                 metadata={
-                    "from": target_language,
-                    "to": switch_to,
-                    "temporary": False,
-                    "hysteresis_confirmed": True,
+                    "from": previous_language,
+                    "to": target_language,
+                    "reason": decision_reason,
+                    "mode": LANGUAGE_SWITCH_MODE,
                 }
             )
-            lang = LANGUAGE_CODE_MAP[switch_to]
             logger.info(
-                f"Language switch CONFIRMED: {target_language} → {switch_to} "
-                f"({lang.name}) (hysteresis: {LANG_SWITCH_CONSECUTIVE} "
-                f"consecutive turns, min {LANG_SWITCH_MIN_CHARS} chars)"
+                "Language switched: %s → %s (mode=%s, reason=%s)",
+                previous_language,
+                target_language,
+                LANGUAGE_SWITCH_MODE,
+                decision_reason,
             )
-            target_language = switch_to
         elif (
-            self._detected_language
-            and self._detected_language in LANGUAGE_CODE_MAP
-            and transcript_length >= LANG_SWITCH_MIN_CHARS
-            and self._detected_language != self._tts_session.current_language
+            LANGUAGE_SWITCH_MODE == "policy"
+            and self._detected_language
+            and self._detected_language != target_language
         ):
-            langfuse_client.create_event(
-                name="language-switch",
-                trace_context=trace_context(self._session_trace_id, self._active_turn_span_id),
-                metadata={
-                    "from": target_language,
-                    "to": self._detected_language,
-                    "temporary": True,
-                    "hysteresis_confirmed": False,
-                }
-            )
-            # Single-turn override: respond in detected language but keep
-            # current TTS instance warm.  If user switches back next turn,
-            # the old websocket is still alive — no reconnect penalty.
             logger.info(
-                f"Temporary language: using {self._detected_language} for this "
-                f"response (transcript: {transcript_length} chars). "
-                f"Current TTS ({target_language}) kept warm — no websocket teardown."
+                "Language detection %s is pending; speaking confirmed language %s "
+                "(pending_count=%s)",
+                self._detected_language,
+                target_language,
+                pending_count,
             )
-            target_language = self._detected_language
-        # else: keep current language (filler already suppressed above)
 
         self._tts_session.current_language = target_language
         
@@ -463,6 +440,9 @@ class SchoolVoiceAgent(Agent):
             "detected_language": self._detected_language,
             "transcript_length": transcript_length,
             "final_tts_language": target_language,
+            "language_switch_mode": LANGUAGE_SWITCH_MODE,
+            "language_policy_reason": decision_reason,
+            "language_pending_count": pending_count,
         })
 
         # ── Step 4: Reset per-turn state ──────────────────────────────────
