@@ -163,11 +163,8 @@ MAX_CONTEXT_ITEMS = 50  # total items before summarization + trimming kicks in
 SLIDING_WINDOW_TURNS = 10  # number of most-recent turns kept verbatim
 
 # ── TTS session management ───────────────────────────────────────────────────
-# Persistent websockets: Sarvam ConnectionPool keeps websockets alive across
-# turns.  We NEVER close them per-turn — only on confirmed language switch
-# or process shutdown.
-TTS_POOL_MAX_SESSION_DURATION = 3600  # 1 hour per websocket before rotation
-TTS_CLOSE_DRAIN_TIMEOUT = 0.25  # seconds to drain in-flight writes before close
+# Sarvam's current LiveKit plugin owns WebSocket lifecycle and pooling. The
+# application uses only its public prewarm(), stream(), and aclose() APIs.
 
 # Noisy environment — uncomment these and comment the above when background noise is present
 # ENDPOINTING_MIN_DELAY = 0.3   # 300ms

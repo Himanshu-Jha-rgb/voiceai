@@ -74,7 +74,7 @@ graph TD
 
 1. **Client Side**: React 19 + TypeScript + Vite SPA using `@livekit/components-react`. Fetches a token via `TokenSource.endpoint('/token')` and connects to LiveKit Cloud. Renders audio visualizer, chat transcript, and language chips from data channel messages.
 2. **Backend Infrastructure**: FastAPI Token Server issues secure LiveKit JWTs (GET + POST endpoints). Serves built frontend as SPA with fallback routing. LiveKit Cloud acts as the WebRTC SFU and provides BVC noise cancellation.
-3. **Agent Worker Node**: Core orchestration layer. Silero VAD for endpointing, Sarvam STT for speech-to-text and language detection, configurable LLM for responses, and Sarvam TTS with persistent per-language WebSocket pools. Includes filler suppression, transcript deduplication, language hysteresis, and rolling conversation summarization.
+3. **Agent Worker Node**: Core orchestration layer. Silero VAD for endpointing, Sarvam STT for speech-to-text and language detection, configurable LLM for responses, and native Sarvam streaming TTS. Sarvam's supported plugin API owns the WebSocket pool and cancellation lifecycle. Includes filler suppression, transcript deduplication, language hysteresis, and rolling conversation summarization.
 4. **External Services**: Langfuse captures hierarchical telemetry — session traces, per-turn spans, STT/LLM/TTS observability (TTFT, TTFB), tool call latency, language switch events, and interruption tracking.
 
 ### Latency budget
@@ -188,6 +188,18 @@ The agent supports three LLM providers, selected via the `LLM_PROVIDER` environm
 | `openai` | `gpt-4o-mini` | Set `OPENAI_API_KEY` |
 | `groq` | `llama-3.3-70b-versatile` | Set `GROQ_API_KEY` |
 
+Groq uses its OpenAI-compatible endpoint and is streamed directly into TTS. The provider factory validates the selected provider key at startup and applies bounded SDK retries. Rolling summaries use the same selected provider, so Groq sessions do not unexpectedly send conversation history to another LLM.
+
+## Runtime modules
+
+- `agent.py` — LiveKit lifecycle, event handlers, and conversation orchestration.
+- `voice_agent/providers.py` — validated Sarvam/OpenAI/Groq LLM and Sarvam STT construction.
+- `voice_agent/conversation.py` — independently testable filler filtering, transcript deduplication, and language hysteresis.
+- `voice_agent/telemetry.py` — optional Langfuse setup with explicit timeout and opt-out.
+- `utils/summarize.py` — provider-aware rolling context summaries.
+
+The agent requires only Sarvam's public TTS methods (`prewarm`, `stream`, and `aclose`). It deliberately does not access private fields such as `_pool` or `_connections`, which keeps upgrades safe.
+
 ## Frontend
 
 React 19 + TypeScript + Vite 8 SPA. Uses Tailwind CSS v4, shadcn/ui (Radix UI primitives), and `@livekit/components-react`.
@@ -213,9 +225,11 @@ The Vite dev server proxies `/token` to `http://localhost:8000` so no CORS issue
 
 ```
 Voice-AI-Agent/
-├── agent.py              # WSState, FillerFilter, LanguageTracker, TranscriptDedup,
-│                         #   TTSSessionManager, RaceFreeSynthesizeStream,
-│                         #   MultilingualTTS, SchoolVoiceAgent, entrypoint
+├── agent.py              # TTS adapter, LiveKit agent, event handlers, entrypoint
+├── voice_agent/
+│   ├── providers.py      # Provider validation + Sarvam/OpenAI/Groq factories
+│   ├── conversation.py   # Filler filter, deduplication, language hysteresis
+│   └── telemetry.py      # Optional Langfuse configuration
 ├── server.py             # FastAPI: GET/POST /token + SPA static file serving
 ├── config.py             # LanguageConfig, 11 languages, all constants
 ├── pyproject.toml        # Python dependencies (uv)
@@ -273,32 +287,7 @@ Voice-AI-Agent/
 
 - Sarvam TTS has **no SSML/emotion tags** — emotion is conveyed through word choice and Indian interjections in the system prompt
 - Each language gets its own persistent `sarvam.TTS` instance managed by `TTSSessionManager` — no scattered `ws.close()` calls
-- `RaceFreeSynthesizeStream` wraps Sarvam's stream with a `WSState` state machine and drain-before-close to prevent aiohttp transport crashes
+- Sarvam plugin v1.6.4 owns native stream cancellation and pooled-WebSocket cleanup; the application deliberately avoids Sarvam private internals
 - Turn detection uses `TurnHandlingOptions(endpointing=EndpointingOptions(...))` — the non-deprecated API with preemptive generation enabled
 - Tools are currently commented out — uncomment in `SchoolVoiceAgent.__init__()` and replace stubs with real school database integrations
 - For noisy environments like crowded classrooms, swap `config.py` to the commented-out noisy values (300ms/600ms endpointing)
-
-
-
-
-what have we done exactly using internals pool and why ?
-
-
-
-
-What We Did Exactly
-In agent.py (specifically under the TTSSessionManager class), the code directly accesses the private attributes of the Sarvam TTS client:
-
-Inspected the Active Connection List: We access tts_instance._pool._connections to get the list of raw websocket connections.
-Evicted Closed WebSockets (_evict_stale & warm): We loop through those connections, check if their state is .closed (e.g., due to server-side idle timeout), and manually purge them from the pool using pool.remove(c).
-Pre-warmed WebSockets (pool.prewarm()): We invoke the pool's internal prewarm() method in the background when the user first connects or when we predict a language switch.
-Why We Did It (The Latency & Reliability Problem)
-1. Preventing 3s+ Latency Spikes (Stale Connections)
-The Problem: If there is a silence of a couple of minutes between conversation turns, Sarvam's servers close the idle WebSocket connection. However, the default Sarvam SDK's connection pool keeps these closed connection objects in its list. When the user speaks again, the SDK attempts to use the dead connection, fails, waits for a timeout, and only then creates a new one. This causes a massive 3+ second delay (TTFB spike).
-The Solution: By checking getattr(c, "closed", True) and calling pool.remove(c) before generating speech, we instantly purge dead connections so the SDK never attempts to use them, completely avoiding the timeout-retry loop.
-2. Achieving Sub-100ms First-Byte Audio (Connection Pre-warming)
-The Problem: Setting up a brand-new WebSocket connection (DNS lookup, TCP handshake, TLS negotiation, and upgrade) takes 300–600ms. If this setup only begins after the LLM outputs its first word, the user feels a jarring lag.
-The Solution: By invoking pool.prewarm() during on_enter and in the background during conversation turns, we establish the WebSocket connection proactively. When the LLM starts yielding tokens, the connection is already open and ready, reducing the startup latency to under 100ms.
-3. Seamless Multi-Language Switching
-The Problem: In a multilingual agent (supporting 11 languages), switching the TTS language would normally mean tearing down the current WebSocket and opening a new one for the target language.
-The Solution: We maintain a persistent sarvam.TTS instance per language. The internal pool keeps the WebSockets for English (en-IN), Hindi (hi-IN), etc., open concurrently. We can switch languages turn-by-turn with zero reconnect penalty.

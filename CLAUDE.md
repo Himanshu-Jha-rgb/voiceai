@@ -35,7 +35,7 @@ Browser ──WebRTC──▶ LiveKit Cloud (BVC noise cancellation)
               (persistent pool: 1 TTS per language, websockets NEVER closed per-turn)
                         │
                         ▼
-              RaceFreeSynthesizeStream (WSState machine, drain-before-close)
+              Native Sarvam TTS stream (plugin-managed cancellation and pooling)
                         │
                         ▼
               Sarvam TTS (bulbul:v3, persistent WebSocket) → Browser
@@ -75,7 +75,10 @@ Exposes port 7860. Startup runs both `agent.py start` (background) and `uvicorn 
 
 | File | Purpose |
 |------|---------|
-| `agent.py` | Core: `WSState`, `FillerFilter`, `LanguageTracker`, `TranscriptDedup`, `TTSSessionManager`, `RaceFreeSynthesizeStream`, `MultilingualTTS`, `SchoolVoiceAgent`, `entrypoint` |
+| `agent.py` | LiveKit TTS adapter, `TTSSessionManager`, `MultilingualTTS`, `SchoolVoiceAgent`, and `entrypoint` |
+| `voice_agent/providers.py` | Provider validation plus Sarvam/OpenAI/Groq LLM and Sarvam STT factories |
+| `voice_agent/conversation.py` | `FillerFilter`, `LanguageTracker`, and `TranscriptDedup` |
+| `voice_agent/telemetry.py` | Optional Langfuse client configuration |
 | `server.py` | FastAPI: GET/POST `/token` (LiveKit JWT), SPA static file serving |
 | `config.py` | `LanguageConfig` dataclass, 11 languages, STT/TTS/LLM/endpointing/hysteresis/filler constants |
 | `pyproject.toml` | Python deps: `livekit-agents[sarvam,silero]`, `langfuse`, `fastapi`, etc. |
@@ -135,29 +138,19 @@ App.tsx
 ### TTS Session Manager (`agent.py:TTSSessionManager`)
 Centralized owner of all TTS websocket lifecycle. Design invariants:
 - ONE `sarvam.TTS` instance per language (lazily created, persistent for session lifetime)
-- Sarvam's internal `ConnectionPool` keeps websockets alive across turns
+- Sarvam's supported TTS API manages pooled WebSockets across turns
 - Websockets are **never** closed between turns — only on confirmed language switch or shutdown
-- `async Lock` serializes all state transitions; `threading.Lock` protects singleton creation
-- `warm()` evicts stale pool entries and prewarms connections
-- Background tasks tracked via `_bg_tasks` set, drained before shutdown
+- `async Lock` serializes close/remove transitions
+- `warm()` calls the supported `prewarm()` API
 
 ### MultilingualTTS (`agent.py:MultilingualTTS`)
 - Extends `livekit.agents.tts.TTS` — drop-in TTS for LiveKit's `Agent`
 - Thin adapter over `TTSSessionManager` — delegates all lifecycle decisions
 - `synthesize()` → returns Sarvam `ChunkedStream` (HTTP POST, no websocket race risk)
-- `stream()` → returns `RaceFreeSynthesizeStream` wrapper with race-free `aclose()`
+- `stream()` → returns Sarvam's native streaming implementation
 - Both retry up to `TTS_WS_MAX_RETRIES` times on transient failures
 
-### RaceFreeSynthesizeStream (`agent.py:RaceFreeSynthesizeStream`)
-Wraps Sarvam's `SynthesizeStream` to prevent the `aiohttp` "Cannot write to closing transport" crash:
-1. **State machine** (`WSState`: DISCONNECTED → CONNECTING → CONNECTED → CLOSING → CLOSED)
-2. `aclose()` acquires `_close_lock`, sets CLOSING, **drains in-flight writes** (250ms), then closes
-3. Duplicate close calls are no-ops (idempotent via state check)
-4. Transport-close errors during teardown are caught and suppressed
-5. The underlying websocket stays alive in Sarvam's `ConnectionPool` for the next turn
-6. Langfuse TTS span with TTFB tracking on first audio chunk
-
-### TranscriptDedup (`agent.py:TranscriptDedup`)
+### TranscriptDedup (`voice_agent/conversation.py`)
 Deduplicates final transcript events via MD5 text hashing + configurable time window. Prevents repeated STT finals from triggering duplicate LLM/TTS cycles.
 
 ### Language detection flow (with REAL hysteresis)
@@ -267,14 +260,12 @@ GROQ_API_KEY=gsk_...             # only if LLM_PROVIDER=groq
 GROQ_MODEL=llama-3.3-70b-versatile  # only if LLM_PROVIDER=groq
 LANGFUSE_PUBLIC_KEY=pk-lf-...    # optional: Langfuse observability
 LANGFUSE_SECRET_KEY=sk-lf-...    # optional: Langfuse observability
-LANGFUSE_HOST=https://cloud.langfuse.com  # optional
+LANGFUSE_BASE_URL=https://cloud.langfuse.com  # optional
 ```
 
 ## Design decisions
 
-- **Centralized websocket ownership** — `TTSSessionManager` is the sole owner of all TTS websocket lifecycle. No scattered `ws.close()` calls. All state transitions serialized via `asyncio.Lock` (async) + `threading.Lock` (sync singleton creation).
-- **Persistent websocket pool** — Sarvam's internal `ConnectionPool` keeps websockets alive indefinitely (1h rotation). Websockets are NEVER closed between turns — only on confirmed language switch or process shutdown.
-- **Race-free stream wrapper** — `RaceFreeSynthesizeStream` wraps Sarvam's `SynthesizeStream` with a `WSState` state machine. `aclose()` drains in-flight writes (250ms) before touching the websocket, preventing the "Cannot write to closing transport" aiohttp crash.
+- **Supported Sarvam lifecycle** — `TTSSessionManager` uses only `prewarm()`, `stream()`, and `aclose()`. Sarvam plugin v1.6.4 owns cancellation and its WebSocket pool, so there is no brittle private-field access.
 - **Real hysteresis (not fake)** — `LanguageTracker` requires 3 consecutive meaningful turns (≥15 chars) in the same language before switching TTS websockets. Fillers and short utterances break the streak. No websocket teardown during pending state.
 - **Filler suppression** — Utterances matching 30+ filler patterns or shorter than 4 characters are dropped entirely: no LLM, no TTS, no state transition. Eliminates spurious "Hmm" → full pipeline activation.
 - **Transcript deduplication** — `TranscriptDedup` uses MD5 hashing + time window to prevent repeated STT finals from triggering duplicate LLM/TTS cycles.

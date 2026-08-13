@@ -49,25 +49,36 @@ async def summarize_conversation(items: list, llm_provider: str = "sarvam") -> O
     logger.info(f"Generating rolling summary from {len(items)} items ({len(text)} chars)")
 
     try:
-        if llm_provider == "openai":
-            return await _summarize_openai(text)
-        else:
-            return await _summarize_sarvam(text)
+        if llm_provider in {"openai", "groq"}:
+            return await _summarize_openai_compatible(text, llm_provider)
+        return await _summarize_sarvam(text)
     except Exception as e:
         logger.warning(f"Rolling summary failed: {e}")
         return None
 
 
-async def _summarize_openai(text: str) -> Optional[str]:
+async def _summarize_openai_compatible(text: str, provider: str) -> Optional[str]:
     try:
         from openai import AsyncOpenAI
     except ImportError:
         logger.warning("openai package not available for summarization")
         return None
 
-    client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    is_groq = provider == "groq"
+    api_key_name = "GROQ_API_KEY" if is_groq else "OPENAI_API_KEY"
+    api_key = os.getenv(api_key_name)
+    if not api_key:
+        logger.warning("%s not set — cannot create a rolling summary", api_key_name)
+        return None
+
+    client = AsyncOpenAI(
+        api_key=api_key,
+        base_url="https://api.groq.com/openai/v1" if is_groq else None,
+        max_retries=2,
+        timeout=20,
+    )
     response = await client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile") if is_groq else os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         messages=[
             {"role": "system", "content": _SUMMARIZATION_PROMPT},
             {"role": "user", "content": text},
@@ -76,7 +87,7 @@ async def _summarize_openai(text: str) -> Optional[str]:
         temperature=0.3,
     )
     summary = response.choices[0].message.content
-    logger.debug(f"OpenAI summary ({len(summary)} chars): {summary[:120]}...")
+    logger.debug("%s summary (%s chars): %s...", provider.title(), len(summary or ""), (summary or "")[:120])
     return summary
 
 
