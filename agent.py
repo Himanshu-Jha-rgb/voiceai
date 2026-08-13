@@ -58,7 +58,11 @@ from config import (
     MAX_CONTEXT_ITEMS,
     SLIDING_WINDOW_TURNS,
 )
-from utils.prompts import SYSTEM_PROMPT, GREETING_INSTRUCTIONS
+from utils.prompts import (
+    SYSTEM_PROMPT,
+    GREETING_INSTRUCTIONS,
+    LANGUAGE_INSTRUCTION_TEMPLATE,
+)
 from utils.tools import (
     lookup_homework,
     check_attendance,
@@ -165,6 +169,68 @@ class SchoolVoiceAgent(Agent):
         task.add_done_callback(self._bg_tasks.discard)
         return task
 
+    def _language_instruction(self) -> str:
+        """Build the current language instruction from the confirmed language."""
+        lang = LANGUAGE_CODE_MAP.get(self._current_language, DEFAULT_LANGUAGE)
+        return LANGUAGE_INSTRUCTION_TEMPLATE.format(name=lang.name, code=lang.code)
+
+    def _upsert_language_instruction(self, ctx: ChatContext) -> None:
+        """Replace any existing language instruction in *ctx* with the current one.
+
+        Used on the temp context in `on_user_turn_completed` to invalidate an
+        in-flight preemptive generation via the framework's equivalence gate.
+        Replacement (never append) guarantees at most one instance exists.
+        """
+        kept = [
+            item
+            for item in ctx.items
+            if not (
+                isinstance(item, ChatMessage)
+                and item.role == "system"
+                and item.extra.get("is_language_instruction")
+            )
+        ]
+        ctx.items[:] = kept
+        ctx.add_message(
+            role="system",
+            content=[self._language_instruction()],
+            extra={"is_language_instruction": True},
+        )
+
+    def _prepare_llm_context(self, ctx: ChatContext) -> ChatContext:
+        """Return a copy of *ctx* with exactly one fresh language instruction,
+        placed immediately before the last user message (nearest = strongest).
+
+        The copy is never persisted; history-bias re-assertion happens per call.
+        """
+        items = [
+            item
+            for item in ctx.items
+            if not (
+                isinstance(item, ChatMessage)
+                and item.role == "system"
+                and item.extra.get("is_language_instruction")
+            )
+        ]
+        last_user = next(
+            (
+                i
+                for i in range(len(items) - 1, -1, -1)
+                if isinstance(items[i], ChatMessage) and items[i].role == "user"
+            ),
+            -1,
+        )
+        instruction = ChatMessage(
+            role="system",
+            content=[self._language_instruction()],
+            extra={"is_language_instruction": True},
+        )
+        if last_user >= 0:
+            items.insert(last_user, instruction)
+        else:
+            items.append(instruction)
+        return ChatContext(items)
+
     async def on_enter(self) -> None:
         logger.info("User entered — generating greeting")
         self._tts.prewarm()
@@ -246,6 +312,17 @@ class SchoolVoiceAgent(Agent):
                 speaker=lang.tts_speaker,
             )
             self._current_language = target_language
+            # Inject the current language instruction into the temp turn context
+            # (replacing any prior instance). The framework's equivalence gate
+            # (agent_activity.py `is_equivalent`) sees this as a ctx change and
+            # invalidates any in-flight preemptive generation, forcing a fresh
+            # reply in the new language. The temp context is discarded after the
+            # turn, so nothing accumulates in committed chat history.
+            self._upsert_language_instruction(turn_ctx)
+            logger.info(
+                "Injected language instruction for %s into turn context",
+                LANGUAGE_CODE_MAP.get(target_language, DEFAULT_LANGUAGE).code,
+            )
         elif (
             LANGUAGE_SWITCH_MODE == "policy"
             and self._detected_language
@@ -395,6 +472,9 @@ class SchoolVoiceAgent(Agent):
             )
 
         full_response_text = ""
+
+        if isinstance(chat_ctx, ChatContext):
+            chat_ctx = self._prepare_llm_context(chat_ctx)
 
         async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
             chunk_count += 1
