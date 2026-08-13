@@ -2,12 +2,12 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Coroutine
+from collections.abc import AsyncGenerator, Coroutine
 from typing import Any, Optional, cast
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 from livekit.agents import JobContext, WorkerOptions, cli, tts
 from livekit.agents.llm import ChatContext, ChatMessage
@@ -486,6 +486,52 @@ class SchoolVoiceAgent(Agent):
                 self.track_bg(
                     self._generate_rolling_summary(old_items)
                 )
+
+    # ── Resilient STT node — auto-reconnect on Sarvam WS drop ────────────────
+
+    async def stt_node(
+        self, audio: AsyncGenerator, model_settings
+    ) -> AsyncGenerator:
+        """Override to retry the STT stream when Sarvam drops the WebSocket.
+
+        Sarvam's STT WS is occasionally dropped mid-session (ConnectionError
+        surfaced as APIStatusError with retryable=True).  The LiveKit framework
+        currently marks those sessions as recoverable=False and tears down the
+        job.  This override catches that error, replaces the dead STT with a
+        fresh instance, and resumes — keeping the session alive.
+        """
+        from livekit.agents._exceptions import APIStatusError  # noqa: PLC0415
+
+        MAX_STT_RETRIES = 3
+        attempt = 0
+
+        while True:
+            try:
+                async for event in Agent.default.stt_node(self, audio, model_settings):
+                    yield event
+                return  # clean exit
+            except APIStatusError as exc:
+                attempt += 1
+                if attempt > MAX_STT_RETRIES or not exc.retryable:
+                    logger.error(
+                        "STT stream failed (attempt %d/%d, retryable=%s): %s — giving up",
+                        attempt,
+                        MAX_STT_RETRIES,
+                        exc.retryable,
+                        exc,
+                    )
+                    raise
+                logger.warning(
+                    "STT WebSocket dropped (attempt %d/%d) — reconnecting: %s",
+                    attempt,
+                    MAX_STT_RETRIES,
+                    exc,
+                )
+                # Replace the dead STT instance with a fresh one
+                self._stt = create_stt()
+                await asyncio.sleep(0.5 * attempt)  # brief back-off
+            except Exception:
+                raise  # never swallow unexpected errors
 
     # ── Streaming LLM node — per-token logging (framework already streams) ──
 
