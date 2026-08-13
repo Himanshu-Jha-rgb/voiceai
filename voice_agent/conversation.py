@@ -20,9 +20,12 @@ LANGUAGE_KEYWORDS: dict[str, str] = {
     "english": "en-IN",
     "अंग्रेज़ी": "en-IN",
     "अंग्रेजी": "en-IN",
+    "इंग्लिश": "en-IN",
+    "इंग्लीश": "en-IN",
     "hindi": "hi-IN",
     "हिंदी": "hi-IN",
     "tamil": "ta-IN",
+    "तमिल": "ta-IN",
     "தமிழ்": "ta-IN",
     "telugu": "te-IN",
     "తెలుగు": "te-IN",
@@ -34,12 +37,18 @@ LANGUAGE_KEYWORDS: dict[str, str] = {
     "मराठी": "mr-IN",
     "gujarati": "gu-IN",
     "ગુજરાતી": "gu-IN",
+    "गुजराती": "gu-IN",
     "bengali": "bn-IN",
     "বাংলা": "bn-IN",
+    "बंगाली": "bn-IN",
+    "बांग्ला": "bn-IN",
     "odia": "od-IN",
     "ଓଡ଼ିଆ": "od-IN",
+    "ओड़िया": "od-IN",
+    "ओडिया": "od-IN",
     "punjabi": "pa-IN",
     "ਪੰਜਾਬੀ": "pa-IN",
+    "पंजाबी": "pa-IN",
 }
 
 _VERBS = r"(?:speak|talk|reply|respond|answer)"
@@ -50,9 +59,9 @@ _language_patterns = (
     re.compile(rf"\b{_VERBS}\s+(?:in|to)?\s*({_LANG_ALT})\b", re.IGNORECASE),
     # lang first, latin: "english mein", "english me", "english please speak"
     re.compile(rf"\b({_LANG_ALT})\s+(?:mein|me|please(?:\s+speak)?)\b", re.IGNORECASE),
-    # lang first, indic scripts: "अंग्रेज़ी में बोलो", "हिंदी बोलो", "বাংলা বলো",
-    # "ಕನ್ನಡ ಮಾತನಾಡು", "தமிழ் பேசு"
-    re.compile(rf"({_LANG_ALT})\s*(?:में|मे|बोलो|बात करो|বলো|বলুন|ಮಾತನಾಡು|ಹೇಳು|பேசு)"),
+    # lang first, indic scripts: "इंग्लिश में बात करें", "अंग्रेज़ी में बोलो",
+    # "हिंदी बोलो", "বাংলা বলো", "ಕನ್ನಡ ಮಾತನಾಡು", "தமிழ் பேசு"
+    re.compile(rf"({_LANG_ALT})\s*(?:में|मे|बोलो|बोलिए|बात करो|बात करें|বলো|বলুন|ಮಾತನಾಡು|ಹೇಳು|பேசு)"),
 )
 
 
@@ -70,6 +79,37 @@ def extract_requested_language(transcript: str) -> str | None:
         if match:
             return LANGUAGE_KEYWORDS.get(match.group(1).lower())
     return None
+
+
+# Words that suggest the turn may be language-related, used to decide whether
+# an LLM fallback should double-check an unmatched transcript. Kept narrow to
+# avoid firing on ordinary conversation (excludes bare "में"/"mein").
+_LANGUAGE_SIGNAL_WORDS = (
+    "बोलो",
+    "बोलिए",
+    "बोलें",
+    "बोल",
+    "बात करो",
+    "बात करें",
+    "बात कर सकते",
+    "बात कर सकती",
+    "bolo",
+    "boliye",
+    "bol",
+    "speak",
+    "talk",
+    "भाषा",
+    "language",
+    "भाषा में",
+)
+
+
+def has_language_signal(transcript: str) -> bool:
+    """Return whether the transcript mentions a language or speech-request word."""
+    normalized = " ".join(transcript.lower().split())
+    if any(keyword in normalized for keyword in LANGUAGE_KEYWORDS):
+        return True
+    return any(signal in normalized for signal in _LANGUAGE_SIGNAL_WORDS)
 
 
 @dataclass(frozen=True)
@@ -101,8 +141,19 @@ class LanguagePolicy:
         self._short_turns_required = short_turns_required
         self._long_turn_word_count = long_turn_word_count
 
-    def decide(self, lang: str | None, transcript: str) -> LanguageDecision:
-        requested = extract_requested_language(transcript)
+    def decide(
+        self,
+        lang: str | None,
+        transcript: str,
+        requested: str | None = None,
+    ) -> LanguageDecision:
+        """Decide the confirmed language for this turn.
+
+        `requested` is an optional externally-derived language hint (e.g. from
+        an LLM fallback detector). When None, the transcript itself is parsed.
+        """
+        if requested is None:
+            requested = extract_requested_language(transcript)
         if requested and requested in LANGUAGE_CODE_MAP:
             return self._switch(requested, "explicit_request")
 

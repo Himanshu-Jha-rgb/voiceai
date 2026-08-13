@@ -1,7 +1,12 @@
 import unittest
 
 from config import LANGUAGE_CODE_MAP
-from voice_agent.conversation import LANGUAGE_KEYWORDS, LanguagePolicy
+from voice_agent.conversation import (
+    LANGUAGE_KEYWORDS,
+    LanguagePolicy,
+    extract_requested_language,
+    has_language_signal,
+)
 
 
 class LanguagePolicyTests(unittest.TestCase):
@@ -47,6 +52,23 @@ class LanguagePolicyTests(unittest.TestCase):
         decision = self.policy.decide("hi-IN", "english mein bolo please")
         self.assertEqual(decision.confirmed_lang, "en-IN")
         self.assertEqual(decision.reason, "explicit_request")
+
+    def test_devanagari_english_request_switches(self) -> None:
+        decision = self.policy.decide(
+            "hi-IN", "और भाई इंग्लिश में बात करें ना।"
+        )
+        self.assertEqual(decision.confirmed_lang, "en-IN")
+        self.assertEqual(decision.reason, "explicit_request")
+
+    def test_external_request_hint_switches_immediately(self) -> None:
+        decision = self.policy.decide("hi-IN", "कुछ बात करनी है", requested="en-IN")
+        self.assertEqual(decision.confirmed_lang, "en-IN")
+        self.assertEqual(decision.reason, "explicit_request")
+
+    def test_unmatched_request_triggers_language_signal(self) -> None:
+        self.assertTrue(has_language_signal("और भाई इंग्लिश में बात करें ना"))
+        self.assertTrue(has_language_signal("what language do you speak"))
+        self.assertFalse(has_language_signal("मैं खाना खा रहा हूँ"))
 
     def test_request_for_confirmed_language_stays_put(self) -> None:
         decision = self.policy.decide("hi-IN", "हिंदी में बोलो")

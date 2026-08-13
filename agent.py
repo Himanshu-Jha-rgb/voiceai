@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncGenerator, Coroutine
 from typing import Any, Optional, cast
@@ -76,6 +77,7 @@ from voice_agent.conversation import (
     LanguagePolicy,
     TranscriptDedup,
     extract_requested_language,
+    has_language_signal,
 )
 from voice_agent.providers import active_model, create_llm, create_stt
 from voice_agent.telemetry import create_langfuse_client
@@ -235,6 +237,54 @@ class SchoolVoiceAgent(Agent):
             items.append(instruction)
         return ChatContext(items)
 
+    async def _resolve_requested_language(self, transcript: str) -> str | None:
+        """Extract an explicit language request — regex first, LLM fallback.
+
+        Regex covers the common phrasings; when the turn still carries
+        language-related signals, a fast LLM judgement handles every other
+        spoken phrasing across all supported languages.
+        """
+        requested = extract_requested_language(transcript)
+        if requested or not has_language_signal(transcript):
+            return requested
+        try:
+            detected = await asyncio.wait_for(
+                self._llm_detect_requested_language(transcript), timeout=2.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("LLM language detection timed out — treating as no request")
+            return None
+        except Exception as exc:  # never break the turn on detector failure
+            logger.warning("LLM language detection failed: %s", exc)
+            return None
+        if detected:
+            logger.info("Language request detected via LLM: %s (from %r)", detected, transcript)
+        return detected
+
+    async def _llm_detect_requested_language(self, transcript: str) -> str | None:
+        llm = self.llm
+        if llm is None:
+            return None
+        prompt = (
+            "You decide whether the user asked the assistant to speak in a specific "
+            "Indian language.\n"
+            "Allowed codes: en-IN, hi-IN, ta-IN, te-IN, kn-IN, ml-IN, mr-IN, gu-IN, bn-IN, od-IN, pa-IN.\n"
+            f"User said: {transcript!r}\n"
+            "If this is NOT a request to speak or switch to a language, reply exactly: none\n"
+            "Otherwise reply with exactly one language code (e.g. en-IN). No other text."
+        )
+        ctx = ChatContext(
+            items=[ChatMessage(role="system", content=[prompt])]
+        )
+        text = ""
+        async with llm.chat(chat_ctx=ctx) as stream:
+            async for chunk in stream:
+                delta = getattr(getattr(chunk, "delta", None), "content", None)
+                if delta:
+                    text += delta
+        code = re.sub(r"[^A-Za-z-]", "", text.strip())
+        return code if code in LANGUAGE_CODE_MAP else None
+
     async def on_enter(self) -> None:
         logger.info("User entered — generating greeting")
         self._tts.prewarm()
@@ -269,25 +319,27 @@ class SchoolVoiceAgent(Agent):
         )
 
         previous_language = self._current_language
+        requested_lang = await self._resolve_requested_language(transcript)
         if LANGUAGE_SWITCH_MODE == "sarvam":
             # Direct mode delegates language choice to Sarvam's per-turn STT
             # detection, while preserving the current language for unknown or
             # unsupported results. An explicit request always wins: the
             # transcript's requested language may differ from the utterance's
             # detected language (e.g. "क्या तुम अंग्रेज़ी में बोल सकते हो?").
-            requested = extract_requested_language(transcript)
-            target_language = requested or (
+            target_language = requested_lang or (
                 self._detected_language
                 if self._detected_language in LANGUAGE_CODE_MAP
                 else previous_language
             )
-            decision_reason = "explicit_request" if requested else "sarvam_per_turn"
+            decision_reason = "explicit_request" if requested_lang else "sarvam_per_turn"
             pending_count = 0
             switched = target_language != previous_language
         else:
             # Policy mode: Sarvam detects every turn, but the policy decides
             # when that result becomes the persistent TTS language.
-            decision = self._language_policy.decide(self._detected_language, transcript)
+            decision = self._language_policy.decide(
+                self._detected_language, transcript, requested=requested_lang
+            )
             target_language = decision.confirmed_lang
             decision_reason = decision.reason
             pending_count = decision.pending_count
