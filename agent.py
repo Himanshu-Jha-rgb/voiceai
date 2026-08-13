@@ -72,7 +72,11 @@ from utils.tools import (
     active_turn_span_var,
 )
 from utils.summarize import summarize_conversation
-from voice_agent.conversation import LanguagePolicy, TranscriptDedup
+from voice_agent.conversation import (
+    LanguagePolicy,
+    TranscriptDedup,
+    extract_requested_language,
+)
 from voice_agent.providers import active_model, create_llm, create_stt
 from voice_agent.telemetry import create_langfuse_client
 
@@ -268,13 +272,16 @@ class SchoolVoiceAgent(Agent):
         if LANGUAGE_SWITCH_MODE == "sarvam":
             # Direct mode delegates language choice to Sarvam's per-turn STT
             # detection, while preserving the current language for unknown or
-            # unsupported results.
-            target_language = (
+            # unsupported results. An explicit request always wins: the
+            # transcript's requested language may differ from the utterance's
+            # detected language (e.g. "क्या तुम अंग्रेज़ी में बोल सकते हो?").
+            requested = extract_requested_language(transcript)
+            target_language = requested or (
                 self._detected_language
                 if self._detected_language in LANGUAGE_CODE_MAP
                 else previous_language
             )
-            decision_reason = "sarvam_per_turn"
+            decision_reason = "explicit_request" if requested else "sarvam_per_turn"
             pending_count = 0
             switched = target_language != previous_language
         else:
