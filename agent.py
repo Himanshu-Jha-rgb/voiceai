@@ -2,7 +2,8 @@ import asyncio
 import json
 import logging
 import time
-from typing import Optional
+from collections.abc import Coroutine
+from typing import Any, Optional, cast
 
 from dotenv import load_dotenv
 
@@ -18,10 +19,12 @@ from livekit.agents.voice.turn import (
     PreemptiveGenerationOptions,
 )
 from livekit.plugins import sarvam, silero
+from langfuse.types import TraceContext
 
 from config import (
     LANGUAGE_CODE_MAP,
     DEFAULT_LANGUAGE,
+    STT_MODEL,
     LLM_MODEL,
     LLM_PROVIDER,
     OPENAI_MODEL,
@@ -80,6 +83,16 @@ langfuse_client = create_langfuse_client()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("school-voice-agent")
 logger.setLevel(logging.INFO)
+
+
+def trace_context(trace_id: str | None, parent_span_id: str | None = None) -> TraceContext | None:
+    """Build Langfuse's typed trace context only when a trace is available."""
+    if not trace_id:
+        return None
+    context: TraceContext = {"trace_id": trace_id}
+    if parent_span_id:
+        context["parent_span_id"] = parent_span_id
+    return context
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -239,9 +252,7 @@ class MultilingualTTS(tts.TTS):
     def current_language(self, code: str) -> None:
         self._session.current_language = code
 
-    def synthesize(
-        self, *, text: str, conn_options=None
-    ) -> tts.ChunkedStream:
+    def synthesize(self, text: str, *, conn_options=None) -> tts.ChunkedStream:
         """Non-streaming synthesis.  Retries on transient failures."""
         last_exc = None
         for attempt in range(TTS_WS_MAX_RETRIES + 1):
@@ -300,9 +311,10 @@ class SchoolVoiceAgent(Agent):
         self._rolling_summary: Optional[str] = None
         self._summary_in_progress: bool = False
 
-        self._session_trace_id: Optional[str] = None
-        self._root_span_id: Optional[str] = None
-        self._active_turn_span_id: Optional[str] = None
+        self._session_trace_id: str | None = None
+        self._root_span_id: str | None = None
+        self._active_turn_span_id: str | None = None
+        self._stt_span: Any | None = None
 
         # Per-turn state (was module-level — moved here for concurrent session safety)
         self._detected_language: Optional[str] = None
@@ -336,7 +348,7 @@ class SchoolVoiceAgent(Agent):
             ],
         )
 
-    def track_bg(self, coro) -> asyncio.Task:
+    def track_bg(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         """Track a background task for cleanup-aware lifecycle."""
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
@@ -364,13 +376,13 @@ class SchoolVoiceAgent(Agent):
                 await asyncio.gather(*list(self._bg_tasks), return_exceptions=True)
         await self._tts_session.aclose()
 
-    async def on_user_turn_completed(self, turn_ctx, *, new_message=None) -> None:
+    async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         turn_span = langfuse_client.start_observation(
             name="user-turn",
-            trace_context={"trace_id": self._session_trace_id, "parent_span_id": getattr(self, "_root_span_id", None)}
+            trace_context=trace_context(self._session_trace_id, self._root_span_id),
         )
         self._active_turn_span_id = turn_span.id
-        active_turn_span_var.set({"trace_id": self._session_trace_id, "span_id": turn_span.id})
+        active_turn_span_var.set({"trace_id": self._session_trace_id or "", "span_id": turn_span.id})
 
         transcript = self._detected_transcript or ""
         transcript_length = len(transcript)
@@ -403,7 +415,7 @@ class SchoolVoiceAgent(Agent):
             # Pools are NEVER invalidated; all languages stay warm.
             langfuse_client.create_event(
                 name="language-switch",
-                trace_context={"trace_id": self._session_trace_id, "parent_span_id": self._active_turn_span_id},
+                trace_context=trace_context(self._session_trace_id, self._active_turn_span_id),
                 metadata={
                     "from": target_language,
                     "to": switch_to,
@@ -426,7 +438,7 @@ class SchoolVoiceAgent(Agent):
         ):
             langfuse_client.create_event(
                 name="language-switch",
-                trace_context={"trace_id": self._session_trace_id, "parent_span_id": self._active_turn_span_id},
+                trace_context=trace_context(self._session_trace_id, self._active_turn_span_id),
                 metadata={
                     "from": target_language,
                     "to": self._detected_language,
@@ -476,7 +488,7 @@ class SchoolVoiceAgent(Agent):
                 new_items.append(
                     ChatMessage(
                         role="system",
-                        text=f"## Earlier conversation\n{self._rolling_summary}",
+                        content=[f"## Earlier conversation\n{self._rolling_summary}"],
                     )
                 )
 
@@ -518,6 +530,7 @@ class SchoolVoiceAgent(Agent):
             inp = []
             if hasattr(chat_ctx, "messages"):
                 messages = chat_ctx.messages() if callable(chat_ctx.messages) else chat_ctx.messages
+                messages = cast(list[Any], messages)
                 for m in messages:
                     if isinstance(m.content, str):
                         inp.append({"role": getattr(m, "role", "unknown"), "content": m.content})
@@ -529,7 +542,7 @@ class SchoolVoiceAgent(Agent):
                 name="llm-generation",
                 model=active_model(),
                 input=inp,
-                trace_context={"trace_id": self._session_trace_id, "parent_span_id": self._active_turn_span_id}
+                trace_context=trace_context(self._session_trace_id, self._active_turn_span_id),
             )
 
         full_response_text = ""
@@ -542,8 +555,9 @@ class SchoolVoiceAgent(Agent):
             text = None
             if isinstance(chunk, str):
                 text = chunk
-            elif hasattr(chunk, "delta") and chunk.delta and chunk.delta.content:
-                text = chunk.delta.content
+            elif hasattr(chunk, "delta"):
+                delta = getattr(chunk, "delta", None)
+                text = getattr(delta, "content", None)
 
             if text:
                 char_count += len(text)
@@ -600,7 +614,7 @@ async def entrypoint(ctx: JobContext) -> None:
     
     root_span = langfuse_client.start_observation(
         name="voice-session",
-        trace_context={"trace_id": session_trace_id},
+        trace_context=trace_context(session_trace_id),
         metadata={
             "room": ctx.room.name,
             "llm_model": active_model(),
@@ -652,15 +666,15 @@ async def entrypoint(ctx: JobContext) -> None:
         is_final = getattr(ev, "is_final", False)
 
         if transcript and not is_final:
-            if getattr(agent, "_stt_span", None) is None:
+            if agent._stt_span is None:
                 if hasattr(agent, "_active_turn_span_id") and agent._active_turn_span_id:
                     agent._stt_span = langfuse_client.start_observation(
                         name="stt",
-                        trace_context={"trace_id": agent._session_trace_id, "parent_span_id": agent._active_turn_span_id}
+                        trace_context=trace_context(agent._session_trace_id, agent._active_turn_span_id),
                     )
 
         if is_final:
-            if getattr(agent, "_stt_span", None):
+            if agent._stt_span:
                 agent._stt_span.update(metadata={
                     "transcript": transcript,
                     "language": language,
@@ -702,21 +716,6 @@ async def entrypoint(ctx: JobContext) -> None:
     @session.on("speech_created")
     def _on_speech_created(ev):
         logger.debug("Agent speech created")
-
-    @session.on("agent_speech_interrupted")
-    def _on_agent_interrupted(ev):
-        if hasattr(agent, "_active_turn_span_id"):
-            langfuse_client.create_event(name="interruption-start", trace_context={"trace_id": agent._session_trace_id, "parent_span_id": agent._active_turn_span_id})
-
-    @session.on("agent_speech_resumed")
-    def _on_agent_resumed(ev):
-        if hasattr(agent, "_active_turn_span_id"):
-            langfuse_client.create_event(name="interruption-resume", trace_context={"trace_id": agent._session_trace_id, "parent_span_id": agent._active_turn_span_id})
-
-    @session.on("agent_speech_canceled")
-    def _on_agent_canceled(ev):
-        if hasattr(agent, "_active_turn_span_id"):
-            langfuse_client.create_event(name="interruption-cancel", trace_context={"trace_id": agent._session_trace_id, "parent_span_id": agent._active_turn_span_id})
 
     @session.on("conversation_item_added")
     def _on_conversation_item(ev):

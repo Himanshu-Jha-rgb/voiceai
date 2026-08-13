@@ -67,8 +67,6 @@ class SessionTracer:
         )
         self._ctx = TraceContext(
             trace_id=self.trace_id,
-            session_id=f"{room_name}-{participant_id}",
-            user_id=participant_id,
         )
 
         # Bootstrap the trace with a session-start event so the trace
@@ -76,7 +74,7 @@ class SessionTracer:
         lf.create_event(
             trace_context=self._ctx,
             name="session.start",
-            metadata={"room": room_name},
+            metadata={"room": room_name, "session_id": f"{room_name}-{participant_id}", "user_id": participant_id},
         )
 
     def span(self, name: str, **kwargs: Any) -> Any:

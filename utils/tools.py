@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from typing import Annotated
+from typing import Annotated, Any
 from contextvars import ContextVar
 
 from livekit.agents.llm import function_tool
@@ -10,7 +10,7 @@ from langfuse import Langfuse
 logger = logging.getLogger(__name__)
 
 langfuse_client = Langfuse()
-active_turn_span_var = ContextVar("active_turn_span", default=None)
+active_turn_span_var: ContextVar[dict[str, str] | None] = ContextVar("active_turn_span", default=None)
 
 def _get_tool_span(name, args):
     ctx = active_turn_span_var.get()
@@ -122,4 +122,3 @@ async def explain_with_example(
     except Exception as e:
         _end_tool_span(span, start, False, str(e))
         raise
-

@@ -173,7 +173,7 @@ All languages use the `shubh` speaker from Sarvam Bulbul v3.
 2. `user_input_transcribed` event stores the detected language code
 3. `FillerFilter` drops filler utterances ("hmm", "uh", "ji") — no LLM/TTS triggered
 4. `TranscriptDedup` prevents repeated STT finals from duplicate processing
-5. `LanguageTracker` applies **real hysteresis**: requires 3 consecutive meaningful turns (>=15 chars) in the same new language before switching TTS
+5. `LanguageTracker` applies **real hysteresis**: requires 3 consecutive meaningful turns (min 25 chars) in the same new language before switching TTS
 6. Until hysteresis confirms: current TTS websocket stays warm — no teardown
 7. Single-turn language mismatches: respond in detected language but keep old TTS instance alive
 8. Transcripts are published to the frontend via LiveKit data channel for real-time chat display
@@ -273,7 +273,7 @@ Voice-AI-Agent/
 - **Dynamic endpointing** — `min_delay=50ms`, `max_delay=150ms`, `alpha=0.6` — aggressive tuning for fast Indian-language turn-taking
 - **Preemptive TTS** — starts synthesis as soon as LLM produces first tokens, reducing time-to-first-audio
 - **TTS connection pooling** — one persistent WebSocket per language, never closed between turns, no reconnect on language switch
-- **Filler suppression** — 27 filler patterns filtered out before LLM/TTS pipeline activation
+- **Filler suppression** — 43 filler patterns filtered out before LLM/TTS pipeline activation
 - **Transcript deduplication** — MD5 hashing + time window prevents repeated STT finals from duplicate processing
 - **Language hysteresis** — 3 consecutive meaningful turns required before switching TTS, eliminates flip-flopping
 - **Two-layer context** — rolling summarization of older turns + sliding window of recent turns for long conversations

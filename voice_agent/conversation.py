@@ -72,7 +72,8 @@ class TranscriptDedup:
             return True
         self._seen[digest] = now
         if len(self._seen) > self._max:
-            del self._seen[min(self._seen, key=self._seen.get)]
+            oldest = min(self._seen, key=lambda key: self._seen[key])
+            del self._seen[oldest]
         return False
 
     def reset(self) -> None:
