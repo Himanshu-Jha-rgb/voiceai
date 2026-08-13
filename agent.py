@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-from livekit.agents import JobContext, WorkerOptions, cli, tts
+from livekit.agents import JobContext, WorkerOptions, cli
 from livekit.agents.llm import ChatContext, ChatMessage
 from livekit.agents.voice import Agent, AgentSession
 from livekit.agents.voice.turn import (
@@ -39,7 +39,6 @@ from config import (
     TTS_OUTPUT_AUDIO_CODEC,
     TTS_MIN_BUFFER_SIZE,
     TTS_MAX_CHUNK_LENGTH,
-    TTS_WS_MAX_RETRIES,
     # Turn detection
     ENDPOINTING_MODE,
     ENDPOINTING_MIN_DELAY,
@@ -90,218 +89,39 @@ def trace_context(trace_id: str | None, parent_span_id: str | None = None) -> Tr
     return context
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TTS Session Manager — centralized websocket ownership
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TTSSessionManager:
-    """Centralized owner of all TTS websocket sessions.
-
-    Design invariants:
-    - ONE Sarvam TTS instance per language (lazily created, persistent)
-    - Sarvam's public TTS API manages its own pooled WebSocket connections
-    - Async lock serializes all state transitions (create, invalidate, close)
-    - NO scattered ws.close() calls — only the session manager closes websockets
-
-    Websocket lifecycle:
-    - Created: on first use of a language
-    - Reused: every subsequent turn in the same language
-    - Closed ONLY: confirmed language switch, idle timeout, or process shutdown
-    - NEVER closed: between turns, during hysteresis pending, or on filler
-    """
-
-    def __init__(self, default_language: str = "hi-IN"):
-        self._default_language = default_language
-        self._tts_instances: dict[str, sarvam.TTS] = {}
-        self._current_language = default_language
-        self._state_lock = asyncio.Lock()
-
-    # ── properties ──────────────────────────────────────────────────────────
-
-    @property
-    def current_language(self) -> str:
-        return self._current_language
-
-    @current_language.setter
-    def current_language(self, code: str) -> None:
-        if code in LANGUAGE_CODE_MAP:
-            self._current_language = code
-        else:
-            logger.warning(
-                f"Unknown language code '{code}', "
-                f"falling back to {self._default_language}"
-            )
-            self._current_language = self._default_language
-
-    # ── TTS instance management ─────────────────────────────────────────────
-
-    def _get_or_create_tts(self, language_code: str) -> sarvam.TTS:
-        """Get or lazily create a Sarvam TTS instance for a language.
-
-        Instances are persistent — they live until invalidate_language() or
-        aclose() is called. Sarvam manages its own connection pool internally.
-        """
-        if language_code in self._tts_instances:
-            return self._tts_instances[language_code]
-
-        lang = LANGUAGE_CODE_MAP.get(language_code, DEFAULT_LANGUAGE)
-        logger.info(
-            "Creating Sarvam TTS for %s (%s) — speaker: %s",
-            lang.name,
-            lang.code,
-            lang.tts_speaker,
-        )
-        instance = sarvam.TTS(
-            target_language_code=lang.code,
-            model=TTS_MODEL,
-            speaker=lang.tts_speaker,
-            speech_sample_rate=TTS_SAMPLE_RATE,
-            pace=TTS_PACE,
-            temperature=TTS_TEMPERATURE,
-            output_audio_bitrate=TTS_OUTPUT_BITRATE,
-            output_audio_codec=TTS_OUTPUT_AUDIO_CODEC,
-            min_buffer_size=TTS_MIN_BUFFER_SIZE,
-            max_chunk_length=TTS_MAX_CHUNK_LENGTH,
-        )
-        self._tts_instances[language_code] = instance
-        return instance
-
-    async def invalidate_language(self, language_code: str) -> None:
-        """Close and remove a TTS instance.
-
-        Called ONLY on confirmed language switch (hysteresis satisfied).
-        Never called during pending state, between turns, or on filler.
-        """
-        async with self._state_lock:
-            instance = self._tts_instances.pop(language_code, None)
-        if instance:
-            logger.info(f"Closing TTS instance for {language_code}")
-            try:
-                await instance.aclose()
-            except Exception as e:
-                logger.warning(f"Error closing TTS for {language_code}: {e}")
-
-    def prewarm(self) -> None:
-        """Prewarm the default language TTS so first turn has a warm websocket."""
-        self._get_or_create_tts(self._default_language).prewarm()
-
-    def warm(self, language_code: str) -> None:
-        """Prewarm a language through Sarvam's supported public API."""
-        self._get_or_create_tts(language_code).prewarm()
-
-    # ── stream / synthesize — the interface used by LiveKit Agent ────────────
-
-    def synthesize(self, text: str) -> tts.ChunkedStream:
-        """Non-streaming synthesis through Sarvam's public API."""
-        return self._get_or_create_tts(self._current_language).synthesize(text=text)
-
-    def stream(self):
-        """Create a native Sarvam streaming session.
-
-        Version 1.6.4 handles cancellation and pooled-WebSocket cleanup, so
-        no private-pool access or custom stream wrapper is required.
-        """
-        return self._get_or_create_tts(self._current_language).stream()
-
-    async def aclose(self) -> None:
-        """Close all TTS instances.  Idempotent — safe to call multiple times.
-
-        Sarvam closes its active streams and pooled connections itself.
-        """
-        async with self._state_lock:
-            instances = list(self._tts_instances.values())
-            self._tts_instances.clear()
-        if not instances:
-            return
-        for inst in instances:
-            try:
-                await inst.aclose()
-            except Exception as e:
-                logger.warning(f"Error during TTS shutdown: {e}")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Multilingual TTS adapter (LiveKit TTS interface)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class MultilingualTTS(tts.TTS):
-    """LiveKit TTS adapter backed by TTSSessionManager.
-
-    Implements the tts.TTS interface that LiveKit's Agent framework expects.
-    Delegates all websocket/stream management to TTSSessionManager for proper
-    ownership and race-free lifecycle.
-    """
-
-    def __init__(self, session_manager: TTSSessionManager):
-        super().__init__(
-            capabilities=tts.TTSCapabilities(streaming=True),
-            sample_rate=TTS_SAMPLE_RATE,
-            num_channels=1,
-        )
-        self._session = session_manager
-
-    @property
-    def current_language(self) -> str:
-        return self._session.current_language
-
-    @current_language.setter
-    def current_language(self, code: str) -> None:
-        self._session.current_language = code
-
-    def synthesize(self, text: str, *, conn_options=None) -> tts.ChunkedStream:
-        """Non-streaming synthesis.  Retries on transient failures."""
-        last_exc = None
-        for attempt in range(TTS_WS_MAX_RETRIES + 1):
-            try:
-                return self._session.synthesize(text=text)
-            except Exception as exc:
-                last_exc = exc
-                logger.warning(
-                    f"TTS synthesize attempt {attempt + 1} failed: {exc}"
-                )
-        raise last_exc  # type: ignore[misc]
-
-    def stream(self, *, conn_options=None):
-        """Streaming synthesis through the native, updated Sarvam stream."""
-        last_exc = None
-        for attempt in range(TTS_WS_MAX_RETRIES + 1):
-            try:
-                return self._session.stream()
-            except Exception as exc:
-                last_exc = exc
-                logger.warning(
-                    f"TTS stream attempt {attempt + 1} failed: {exc}"
-                )
-        raise last_exc  # type: ignore[misc]
-
-    async def update_options(
-        self,
-        *,
-        target_language_code: Optional[str] = None,
-        speaker: Optional[str] = None,
-        pace: Optional[float] = None,
-        temperature: Optional[float] = None,
-    ) -> None:
-        if target_language_code:
-            self.current_language = target_language_code
-        # The underlying TTS instance is managed by the session — update_options
-        # on the active instance is called through the delegate when needed.
-
-    def prewarm(self) -> None:
-        self._session.prewarm()
-
-    async def aclose(self) -> None:
-        await self._session.aclose()
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SchoolVoiceAgent
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _create_tts(language_code: str = "hi-IN") -> sarvam.TTS:
+    """Create a single Sarvam TTS instance for all languages.
+
+    Bulbul v3 is a unified multilingual model — update_options() switches the
+    target language per-request on the same WebSocket pool. No separate
+    instance per language is needed.
+    """
+    lang = LANGUAGE_CODE_MAP.get(language_code, DEFAULT_LANGUAGE)
+    return sarvam.TTS(
+        target_language_code=lang.code,
+        model=TTS_MODEL,
+        speaker=lang.tts_speaker,
+        speech_sample_rate=TTS_SAMPLE_RATE,
+        pace=TTS_PACE,
+        temperature=TTS_TEMPERATURE,
+        output_audio_bitrate=TTS_OUTPUT_BITRATE,
+        output_audio_codec=TTS_OUTPUT_AUDIO_CODEC,
+        min_buffer_size=TTS_MIN_BUFFER_SIZE,
+        max_chunk_length=TTS_MAX_CHUNK_LENGTH,
+    )
+
+
 class SchoolVoiceAgent(Agent):
     def __init__(self) -> None:
-        # Centralized TTS session manager — owns all websocket lifecycle
-        self._tts_session = TTSSessionManager(default_language="hi-IN")
-        self._multilingual_tts = MultilingualTTS(self._tts_session)
+        # Single TTS instance — Bulbul v3 is a unified model; language is
+        # switched per-turn via update_options(), not via new instances.
+        self._tts = _create_tts("hi-IN")
+        self._current_language: str = "hi-IN"
 
         self._rolling_summary: Optional[str] = None
         self._summary_in_progress: bool = False
@@ -328,7 +148,7 @@ class SchoolVoiceAgent(Agent):
             instructions=SYSTEM_PROMPT,
             stt=create_stt(),
             llm=llm,
-            tts=self._multilingual_tts,
+            tts=self._tts,
             tools=[
                 # lookup_homework,
                 # check_attendance,
@@ -347,16 +167,12 @@ class SchoolVoiceAgent(Agent):
 
     async def on_enter(self) -> None:
         logger.info("User entered — generating greeting")
-        # Prewarm only hot languages to avoid socket explosion from 11 pools
-        HOT_LANGUAGES = ["hi-IN", "en-IN"]
-        for lang in HOT_LANGUAGES:
-            self._tts_session.warm(lang)
+        self._tts.prewarm()
         self.session.generate_reply(instructions=GREETING_INSTRUCTIONS)
 
     async def on_exit(self) -> None:
-        """Clean up all TTS websocket sessions and tracked tasks."""
-        logger.info("User exiting — closing TTS session manager")
-        # Drain tracked background tasks before closing TTS
+        """Clean up TTS and tracked background tasks."""
+        logger.info("User exiting — closing TTS")
         if self._bg_tasks:
             logger.debug(f"Draining {len(self._bg_tasks)} agent background tasks")
             for task in list(self._bg_tasks):
@@ -364,7 +180,7 @@ class SchoolVoiceAgent(Agent):
                     task.cancel()
             if self._bg_tasks:
                 await asyncio.gather(*list(self._bg_tasks), return_exceptions=True)
-        await self._tts_session.aclose()
+        await self._tts.aclose()
 
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         turn_span = langfuse_client.start_observation(
@@ -382,7 +198,7 @@ class SchoolVoiceAgent(Agent):
             f"transcript: {transcript[:60]!r} ({transcript_length} chars)"
         )
 
-        previous_language = self._tts_session.current_language
+        previous_language = self._current_language
         if LANGUAGE_SWITCH_MODE == "sarvam":
             # Direct mode delegates language choice to Sarvam's per-turn STT
             # detection, while preserving the current language for unknown or
@@ -422,6 +238,14 @@ class SchoolVoiceAgent(Agent):
                 LANGUAGE_SWITCH_MODE,
                 decision_reason,
             )
+            # update_options() changes language on the same WebSocket pool —
+            # no new connection needed since Bulbul v3 is a unified model.
+            lang = LANGUAGE_CODE_MAP.get(target_language, DEFAULT_LANGUAGE)
+            self._tts.update_options(
+                target_language_code=lang.code,
+                speaker=lang.tts_speaker,
+            )
+            self._current_language = target_language
         elif (
             LANGUAGE_SWITCH_MODE == "policy"
             and self._detected_language
@@ -434,8 +258,6 @@ class SchoolVoiceAgent(Agent):
                 target_language,
                 pending_count,
             )
-
-        self._tts_session.current_language = target_language
         
         turn_span.update(metadata={
             "detected_language": self._detected_language,
