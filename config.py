@@ -52,7 +52,7 @@ TTS_MAX_CHUNK_LENGTH = 150
 TTS_WS_MAX_RETRIES = 2  # stale WebSocket recovery attempts
 
 # LLM
-LLM_MODEL = "sarvam-30b"  # Sarvam model name (only used when provider is "sarvam")
+LLM_MODEL = os.getenv("SARVAM_LLM_MODEL", "sarvam-30b")  # Sarvam model name (only used when provider is "sarvam")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "sarvam")  # "sarvam", "openai", or "groq"
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # OpenAI model
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")  # Groq model
@@ -60,9 +60,9 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")  # Groq model
 # ── Turn detection (aggressive conversational tuning) ─────────────────────────
 
 ENDPOINTING_MODE = "dynamic"  # "fixed" or "dynamic" — dynamic adapts to speaker cadence
-ENDPOINTING_MIN_DELAY = 0.05  # 50ms minimum silence before end-of-turn (was 70ms)
-ENDPOINTING_MAX_DELAY = 0.15  # 150ms cap — faster turn finalization (was 250ms)
-ENDPOINTING_ALPHA = 0.6  # EMA coefficient — more responsive to current speech (was 0.7)
+ENDPOINTING_MIN_DELAY = 0.3   # 300ms minimum silence before end-of-turn
+ENDPOINTING_MAX_DELAY = 0.8   # 800ms cap — longer wait for user to finish
+ENDPOINTING_ALPHA = 0.7       # EMA coefficient — balanced responsiveness
 
 # ── Preemptive generation ────────────────────────────────────────────────────
 PREEMPTIVE_GENERATION = True
@@ -70,13 +70,13 @@ PREEMPTIVE_TTS = True  # start TTS as soon as LLM produces first tokens
 
 # ── Interruption handling ────────────────────────────────────────────────────
 INTERRUPTION_MIN_DURATION = (
-    0.2  # 200ms minimum speech to register interruption (was 300ms)
+    0.3  # 300ms minimum speech to register interruption — avoids false triggers from coughs/breaths
 )
 BACKCHANNEL_BOUNDARY_START = (
-    0.3  # suppress interruptions 300ms after agent starts (was 500ms)
+    0.3  # suppress interruptions 0.3s after agent starts
 )
 BACKCHANNEL_BOUNDARY_END = (
-    1.5  # suppress interruptions 1.5s before agent ends (was 2.0s)
+    0.8  # suppress interruptions 0.8s before agent ends — total window ≤1.1s to preserve barge-in
 )
 
 # ── Confirmed language policy ──────────────────────────────────────────────────
@@ -101,7 +101,8 @@ LANGUAGE_SHORT_TURNS_REQUIRED = 2
 #
 # Only include pure thinking/sound-fillers.  Words like "haan" (yes),
 # "nahi" (no), "ji" (yes) can be legitimate answers — do NOT include them.
-FILLER_MIN_LENGTH = 4  # transcript shorter than this is treated as filler
+# FILLER_MIN_LENGTH removed — classify as filler only when transcript matches FILLER_PATTERNS.
+# A blanket length shortcut silently overrides explicit real answers like "ji", "no", "yes".
 FILLER_PATTERNS: set[str] = {
     # English — thinking sounds only
     "hmm",
@@ -173,5 +174,5 @@ SLIDING_WINDOW_TURNS = 10  # number of most-recent turns kept verbatim
 # ENDPOINTING_MIN_DELAY = 0.3   # 300ms
 # ENDPOINTING_MAX_DELAY = 0.6   # 600ms
 # ENDPOINTING_ALPHA = 0.9
-# BACKCHANNEL_BOUNDARY_START = 1.0
-# BACKCHANNEL_BOUNDARY_END = 3.5
+# BACKCHANNEL_BOUNDARY_START = 0.5
+# BACKCHANNEL_BOUNDARY_END = 1.0

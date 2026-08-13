@@ -10,26 +10,10 @@ import time
 from dataclasses import dataclass
 
 from config import (
-    FILLER_MIN_LENGTH,
-    FILLER_PATTERNS,
     LANGUAGE_CODE_MAP,
     LANGUAGE_LONG_TURN_WORD_COUNT,
     LANGUAGE_SHORT_TURNS_REQUIRED,
 )
-
-
-class FillerFilter:
-    """Identify utterances that should not influence language selection."""
-
-    @staticmethod
-    def is_filler(transcript: str) -> bool:
-        text = transcript.strip().lower()
-        if not text or len(text) < FILLER_MIN_LENGTH or text in FILLER_PATTERNS:
-            return True
-        words = text.split()
-        return (len(words) == 1 and len(words[0]) <= 3) or (
-            len(words) == 2 and all(len(word) <= 3 for word in words)
-        )
 
 
 def is_explicit_request(transcript: str) -> bool:
