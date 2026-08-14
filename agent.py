@@ -135,6 +135,10 @@ class SchoolVoiceAgent(Agent):
 
         self._rolling_summary: Optional[str] = None
         self._summary_in_progress: bool = False
+        # Turns evicted from the window while a summarization run was already
+        # in flight — held here and merged into the NEXT summarization run so
+        # they are never silently lost.
+        self._pending_summary_items: list = []
 
         self._session_trace_id: str | None = None
         self._root_span_id: str | None = None
@@ -439,11 +443,22 @@ class SchoolVoiceAgent(Agent):
                 f"recent_turns={len(recent_items) // 2}"
             )
 
-            if old_items and not self._summary_in_progress:
-                self._summary_in_progress = True
-                self.track_bg(
-                    self._generate_rolling_summary(old_items)
-                )
+            if old_items:
+                if self._summary_in_progress:
+                    # Summarizer is busy — hold the evicted turns for the next
+                    # run instead of dropping them.
+                    self._pending_summary_items.extend(old_items)
+                    logger.info(
+                        f"Summary in progress — buffering {len(old_items)} evicted "
+                        f"items (pending={len(self._pending_summary_items)})"
+                    )
+                else:
+                    pending = list(self._pending_summary_items)
+                    self._pending_summary_items = []
+                    self._summary_in_progress = True
+                    self.track_bg(
+                        self._generate_rolling_summary(pending + old_items)
+                    )
 
     # ── Resilient STT node — auto-reconnect on Sarvam WS drop ────────────────
 
@@ -581,7 +596,9 @@ class SchoolVoiceAgent(Agent):
 
     async def _generate_rolling_summary(self, old_items: list) -> None:
         try:
-            summary = await summarize_conversation(old_items, LLM_PROVIDER)
+            summary = await summarize_conversation(
+                old_items, LLM_PROVIDER, previous_summary=self._rolling_summary
+            )
             if summary:
                 self._rolling_summary = summary
                 logger.info(f"Rolling summary updated ({len(summary)} chars)")
@@ -722,6 +739,12 @@ async def entrypoint(ctx: JobContext) -> None:
                             "type": "transcript",
                             "role": "agent",
                             "text": text,
+                            # The confirmed/policy language the TTS actually
+                            # spoke. Frontend uses this to highlight the chip
+                            # rather than the user's raw STT detection (which
+                            # can differ, e.g. an English "speak Odia" reads as
+                            # en-IN while the agent replies in od-IN).
+                            "language": agent._current_language,
                         }),
                         reliable=True,
                     )

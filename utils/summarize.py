@@ -4,12 +4,19 @@ from typing import Optional
 
 logger = logging.getLogger("school-voice-agent")
 
+# Hard cap for the accumulated rolling summary — prevents unbounded growth
+# across many summarization cycles.
+SUMMARY_MAX_CHARS = 1200
+
 _SUMMARIZATION_PROMPT = (
     "Summarise the following conversation turns in 2-3 sentences. "
     "Keep every important fact: the user's role (student/parent/teacher), "
     "grade/class, board, subject, topic being discussed, problems solved, "
     "and any personal details the user shared. "
-    "This summary will be fed back to the AI so it remembers the full context."
+    "This summary will be fed back to the AI so it remembers the full context.\n"
+    "If a PREVIOUS SUMMARY is provided, do not discard it: merge its facts "
+    "with the new turns into ONE combined summary. The result must stay "
+    "compact (2-3 sentences) while preserving every fact from both."
 )
 
 
@@ -36,25 +43,50 @@ def _format_items_as_text(items: list) -> str:
     return "\n".join(lines)
 
 
-async def summarize_conversation(items: list, llm_provider: str = "sarvam") -> Optional[str]:
+async def summarize_conversation(
+    items: list,
+    llm_provider: str = "sarvam",
+    previous_summary: Optional[str] = None,
+) -> Optional[str]:
     """Produce a 2-3 sentence summary of older conversation items.
 
-    Returns ``None`` if summarization fails or isn't available — the caller
-    should gracefully degrade to the sliding-window-only fallback.
+    When ``previous_summary`` is given, it is fed back into the summarization
+    prompt and merged with the new items — so context accumulates instead of
+    being overwritten by the latest chunk. Returns ``None`` if summarization
+    fails or isn't available — the caller should gracefully degrade to the
+    sliding-window-only fallback.
     """
     text = _format_items_as_text(items)
     if not text.strip():
-        return None
+        return previous_summary  # nothing new — keep what we already have
+
+    if previous_summary:
+        text = (
+            f"PREVIOUS SUMMARY (preserve every fact from it):\n"
+            f"{previous_summary}\n\nNEW TURNS:\n{text}"
+        )
 
     logger.info(f"Generating rolling summary from {len(items)} items ({len(text)} chars)")
 
     try:
         if llm_provider in {"openai", "groq"}:
-            return await _summarize_openai_compatible(text, llm_provider)
-        return await _summarize_sarvam(text)
+            summary = await _summarize_openai_compatible(text, llm_provider)
+        else:
+            summary = await _summarize_sarvam(text)
     except Exception as e:
         logger.warning(f"Rolling summary failed: {e}")
         return None
+
+    if not summary:
+        return None
+
+    # Hard cap so the merged summary can't grow unboundedly across cycles.
+    if len(summary) > SUMMARY_MAX_CHARS:
+        summary = summary[:SUMMARY_MAX_CHARS].rsplit(" ", 1)[0] + " …"
+        logger.warning(
+            f"Rolling summary exceeded {SUMMARY_MAX_CHARS} chars — truncated"
+        )
+    return summary
 
 
 async def _summarize_openai_compatible(text: str, provider: str) -> Optional[str]:
