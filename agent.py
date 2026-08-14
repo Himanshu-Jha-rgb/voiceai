@@ -323,24 +323,25 @@ class SchoolVoiceAgent(Agent):
         )
 
         previous_language = self._current_language
-        requested_lang = await self._resolve_requested_language(transcript)
         if LANGUAGE_SWITCH_MODE == "sarvam":
             # Direct mode delegates language choice to Sarvam's per-turn STT
-            # detection, while preserving the current language for unknown or
-            # unsupported results. An explicit request always wins: the
-            # transcript's requested language may differ from the utterance's
-            # detected language (e.g. "क्या तुम अंग्रेज़ी में बोल सकते हो?").
-            target_language = requested_lang or (
+            # detection, preserving the current language for unknown or
+            # unsupported results. Plain by design — no explicit-request
+            # detection (regex/LLM) runs here; that machinery is policy-mode
+            # only.
+            target_language = (
                 self._detected_language
                 if self._detected_language in LANGUAGE_CODE_MAP
                 else previous_language
             )
-            decision_reason = "explicit_request" if requested_lang else "sarvam_per_turn"
+            decision_reason = "sarvam_per_turn"
             pending_count = 0
             switched = target_language != previous_language
         else:
             # Policy mode: Sarvam detects every turn, but the policy decides
-            # when that result becomes the persistent TTS language.
+            # when that result becomes the persistent TTS language. Explicit
+            # language requests (regex + LLM fallback) are resolved here.
+            requested_lang = await self._resolve_requested_language(transcript)
             decision = self._language_policy.decide(
                 self._detected_language, transcript, requested=requested_lang
             )
