@@ -281,6 +281,6 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com  # optional
 - **SPA static serving** — `server.py` serves built frontend from `frontend/dist/` with SPA fallback (404 → index.html). Vite dev proxies `/token` to backend.
 - **Text-based emotion** — Sarvam lacks SSML; the LLM conveys emotion through word choice and Indian interjections.
 - **Data messages to frontend** — agent publishes `{type: "transcript", role, text, language}` via LiveKit data channel for chat bubbles and language highlighting.
-- **Explicit mp3 codec** — `output_audio_codec="mp3"` set explicitly; `"wav"` is blocked because Sarvam returns raw PCM bytes instead of a valid WAV container, causing LiveKit decode crashes.
+- **`linear16` codec, not mp3** — `output_audio_codec="linear16"` uses raw PCM passthrough (no per-chunk decode hop), per Sarvam's official LiveKit best-practices. `"wav"` is blocked (Sarvam returns raw PCM, no WAV container) and `"mp3"` decode-glitches at chunk seams, causing stuttering audio that looks like a network issue (see livekit/agents#1454).
 - **Stale WebSocket retry** — `synthesize()` and `stream()` retry up to `TTS_WS_MAX_RETRIES` times on failure. ConnectionPool handles stale connection recovery internally.
 - **`target_language_code` propagation** — `update_options()` passes `target_language_code` through to the underlying `sarvam.TTS.update_options()` so the internal opts stay consistent with the wrapper's language routing.

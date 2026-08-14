@@ -83,7 +83,7 @@ graph TD
 |---|---|
 | Browser to LiveKit | 20-40ms |
 | Sarvam STT | ~70ms |
-| Endpointing delay | 50-150ms |
+| Endpointing delay | 300-800ms |
 | LLM first token | 150-400ms (varies by provider) |
 | Sarvam TTS (first byte) | 100-200ms |
 | LiveKit to Browser | 20-40ms |
@@ -277,15 +277,17 @@ Voice-AI-Agent/
 ## Key optimizations
 
 - **Silero VAD** — dedicated voice activity detection following LiveKit's recommended pattern
-- **Dynamic endpointing** — `min_delay=50ms`, `max_delay=150ms`, `alpha=0.6` — aggressive tuning for fast Indian-language turn-taking
-- **Preemptive TTS** — starts synthesis as soon as LLM produces first tokens, reducing time-to-first-audio
+- **Dynamic endpointing** — `min_delay=300ms`, `max_delay=800ms`, `alpha=0.7` — responsive tuning for fast Indian-language turn-taking
+- **Preemptive TTS** — starts synthesis as soon as LLM produces first tokens, reducing time-to-first-audio. Preemptive audio that gets cancelled (transcript change, language switch) cuts mid-word — if cracks persist, set `PREEMPTIVE_TTS=False` in `config.py` (LLM still preempts, TTS waits for turn commit)
+- **`linear16` TTS codec** — raw PCM passthrough, no per-chunk decode hop; `mp3` decode-glitches at chunk seams causing stuttering audio that looks like a network issue (livekit/agents#1454). `wav` is broken (Sarvam returns raw PCM, no container)
+- **Smooth streaming prosody** — `TTS_MIN_BUFFER_SIZE=60` so each synthesized chunk starts at a natural phrase boundary; 30 produced fragmented prosody / cracked words at chunk seams
 - **TTS connection pooling** — one persistent WebSocket per language, never closed between turns, no reconnect on language switch
 - **Filler suppression** — 43 filler patterns filtered out before LLM/TTS pipeline activation
 - **Transcript deduplication** — MD5 hashing + time window prevents repeated STT finals from duplicate processing
-- **Language hysteresis** — 3 consecutive meaningful turns required before switching TTS, eliminates flip-flopping
+- **Language hysteresis** — explicit request or a 5+ word turn switches immediately; two consecutive short turns are required otherwise (flip-flopping resets the pending count)
 - **Two-layer context** — rolling summarization of older turns + sliding window of recent turns for long conversations
 - **BVC noise cancellation** — LiveKit server-side removes keyboard, fan, background voices
-- **200ms barge-in** — `min_duration=0.2` enables natural interruption with backchannel boundary suppression
+- **300ms barge-in** — `min_duration=0.3` enables natural interruption with backchannel boundary suppression
 - **Langfuse observability** — hierarchical tracing: session, turns, STT, LLM (TTFT), TTS (TTFB), tool calls, language switches, interruptions
 - **Multi-provider LLM** — switch between Sarvam, OpenAI, and Groq via environment variable
 - **Noisy environment fallback** — `config.py` has commented-out overrides for background-noise-heavy settings

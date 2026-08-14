@@ -43,10 +43,14 @@ TTS_PACE = 1.0
 TTS_TEMPERATURE = 0.6
 TTS_OUTPUT_BITRATE = "128k"
 TTS_OUTPUT_AUDIO_CODEC = (
-    "mp3"  # "wav" is broken: Sarvam returns raw PCM, not a WAV container
+    "linear16"  # no per-chunk decode hop (Sarvam/LiveKit best practice). "wav" is
+    # broken (raw PCM, no container) and "mp3" decode-glitches at chunk seams —
+    # stuttering audio that looks like a network issue.
 )
 TTS_MIN_BUFFER_SIZE = (
-    30  # chars before TTS starts — aggressive for fast first audio (was 50)
+    60  # chars before TTS synthesizes — 30 caused fragmented prosody / cracked
+    # words at chunk seams (Sarvam doc: lower = faster TTFA, more fragmented
+    # prosody). 60 buffers enough for natural phrase boundaries at low latency cost.
 )
 TTS_MAX_CHUNK_LENGTH = 150
 TTS_WS_MAX_RETRIES = 2  # stale WebSocket recovery attempts
@@ -67,6 +71,10 @@ ENDPOINTING_ALPHA = 0.7       # EMA coefficient — balanced responsiveness
 # ── Preemptive generation ────────────────────────────────────────────────────
 PREEMPTIVE_GENERATION = True
 PREEMPTIVE_TTS = True  # start TTS as soon as LLM produces first tokens
+# Note: per LiveKit docs preemptive TTS is opt-in — cancelled preemptive audio
+# cuts mid-word, which can sound like packet loss. If cracks persist after the
+# linear16 + min_buffer fixes, set PREEMPTIVE_TTS = False (LLM still preempts;
+# TTS waits for turn commit — adds ~300ms, removes cancelled-audio artifacts).
 
 # ── Interruption handling ────────────────────────────────────────────────────
 INTERRUPTION_MIN_DURATION = (
