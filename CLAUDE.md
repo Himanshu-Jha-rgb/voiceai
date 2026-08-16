@@ -2,7 +2,7 @@
 
 ## Overview
 
-Multilingual conversational voice agent for schools across India. Built on **LiveKit Agents** + **Sarvam AI** (STT/TTS/LLM). Supports 11 Indian languages with automatic detection and dynamic TTS voice switching.
+Multilingual conversational voice agent for schools across India. Built on **LiveKit Agents** + **Sarvam AI** (STT/TTS/LLM). Supports 11 Indian languages with automatic detection and dynamic TTS language switching.
 
 ## Architecture
 
@@ -10,26 +10,36 @@ Multilingual conversational voice agent for schools across India. Built on **Liv
 Browser ──WebRTC──▶ LiveKit Cloud (BVC noise cancellation)
                         │
                         ▼
-              Silero VAD (turn detection, speech start/end)
+              Silero VAD (framework default — speech presence, speech start/end,
+              barge-in trigger)
+              + inference.TurnDetector (framework default — audio semantic+
+                acoustic end-of-turn model, decides when the user finished)
+              + DynamicEndpointing (300–800ms EMA silence backstop)
                         │
                         ▼
               Sarvam STT (saaras:v3, language="unknown")
               → auto-detects language, ~70ms latency
+              → stt_node override auto-reconnects dropped WebSockets (3 attempts)
                         │
                         ▼
               TranscriptDedup (text hash + time window — drop repeated finals)
                         │
                         ▼
               LanguagePolicy (confirmed TTS language + pending short turns)
-              → explicit / >5-word turn switches immediately; 2 short turns confirm
+              → explicit request (regex + LLM fallback) / >5-word turn switches
+                immediately; 2 short turns confirm
                         │
                         ▼
               LLM (Sarvam / OpenAI / Groq — configurable via LLM_PROVIDER)
-              + Langfuse tracing (per-turn spans, LLM generation, TTS, STT)
+              + Langfuse tracing (per-turn spans, LLM generation, STT)
+              + language instruction injected into turn context per confirmed
+                language (forces fresh generation via equivalence gate)
                         │
                         ▼
-              MultilingualTTS → TTSSessionManager → Sarvam TTS instance
-              (persistent pool: 1 TTS per language, websockets NEVER closed per-turn)
+              Single Sarvam TTS instance (bulbul:v3)
+              → language switched per-turn via update_options()
+                (same instance + WebSocket pool for all languages, never closed
+                between turns)
                         │
                         ▼
               Native Sarvam TTS stream (plugin-managed cancellation and pooling)
@@ -63,8 +73,8 @@ uv run python agent.py console
 ## Docker / Hugging Face Spaces
 
 `Dockerfile` is a multi-stage build for HF Spaces deployment:
-1. **Stage 1** (`node:20-slim`): installs npm deps, runs `npm run build`
-2. **Stage 2** (`uv:python3.12-bookworm-slim`): installs ffmpeg + curl, `uv sync --frozen`, copies built frontend
+1. **Stage 1** (`node:22-slim`): installs npm deps via `npm ci`, runs `npm run build`
+2. **Stage 2** (`uv:python3.12-bookworm-slim`): installs ffmpeg + curl, `uv sync --frozen --no-dev`, copies built frontend
 
 Exposes port 7860. Startup runs both `agent.py start` (background) and `uvicorn server:app` on port 7860.
 
@@ -72,25 +82,26 @@ Exposes port 7860. Startup runs both `agent.py start` (background) and `uvicorn 
 
 | File | Purpose |
 |------|---------|
-| `agent.py` | LiveKit TTS adapter, `TTSSessionManager`, `MultilingualTTS`, `SchoolVoiceAgent`, and `entrypoint` |
+| `agent.py` | LiveKit agent, event handlers, language-policy wiring, STT/LLM node overrides, and `entrypoint` |
 | `voice_agent/providers.py` | Provider validation plus Sarvam/OpenAI/Groq LLM and Sarvam STT factories |
-| `voice_agent/conversation.py` | `LanguagePolicy`, explicit-request detection, filler helpers, and `TranscriptDedup` |
-| `voice_agent/telemetry.py` | Optional Langfuse client configuration |
+| `voice_agent/conversation.py` | `LanguagePolicy`, explicit language-request parsing, and `TranscriptDedup` |
+| `voice_agent/telemetry.py` | Optional Langfuse client configuration (timeout + opt-out) |
 | `server.py` | FastAPI: GET/POST `/token` (LiveKit JWT), SPA static file serving |
-| `config.py` | `LanguageConfig` dataclass, 11 languages, STT/TTS/LLM/endpointing/hysteresis/filler constants |
-| `pyproject.toml` | Python deps: `livekit-agents[sarvam,silero]`, `langfuse`, `fastapi`, etc. |
-| `utils/prompts.py` | `SYSTEM_PROMPT` (voice-optimised, ~2000 chars) + `GREETING_INSTRUCTIONS` |
+| `config.py` | `LanguageConfig` dataclass, 11 languages, STT/TTS/LLM/endpointing/hysteresis constants (filler patterns defined but unused) |
+| `tests/test_language_policy.py` | `LanguagePolicy` unit tests |
+| `pyproject.toml` | Python deps pinned to `livekit-agents[sarvam,silero]==1.6.4`, `langfuse`, `fastapi`, etc. |
+| `utils/prompts.py` | `SYSTEM_PROMPT` (voice-optimised) + `GREETING_INSTRUCTIONS` + `LANGUAGE_INSTRUCTION_TEMPLATE` |
 | `utils/tools.py` | 5 `@function_tool` functions (currently commented out in agent) + Langfuse span helpers |
-| `utils/summarize.py` | Rolling conversation summarization (Sarvam or OpenAI) |
+| `utils/summarize.py` | Rolling conversation summarization (Sarvam or OpenAI/Groq) |
 | `utils/tracing.py` | `SessionTracer` class (unused — agent.py uses Langfuse directly) |
-| `Dockerfile` | Multi-stage build: Node 20 frontend builder + UV Python 3.12, designed for HF Spaces |
+| `Dockerfile` | Multi-stage build: Node 22 frontend builder + UV Python 3.12, designed for HF Spaces |
 | `frontend/src/App.tsx` | Root — `AgentSessionProvider` + `AgentUI` (visualizer, language bar, chat, controls) |
 | `frontend/src/main.tsx` | React 19 entrypoint |
 | `frontend/src/hooks/useTranscripts.ts` | LiveKit data channel listener — parses `{type:"transcript"}` messages |
 | `frontend/src/components/LanguageBar.tsx` | 11 language chips with active highlight |
-| `frontend/src/components/agents-ui/` | Agent UI components (session provider, control bar, chat transcript, audio visualizer, etc.) |
+| `frontend/src/components/agents-ui/` | Agent UI components (session provider, control bar, chat transcript, audio visualizer, track controls, etc.) |
 | `frontend/src/components/ai-elements/` | AI conversation/message primitives |
-| `frontend/src/components/ui/` | shadcn/ui base components (button, toggle, tooltip, select, separator) |
+| `frontend/src/components/ui/` | shadcn/ui base components (button, button-group, toggle, tooltip, select, separator) |
 | `frontend/src/lib/utils.ts` | `cn()` utility (clsx + tailwind-merge) |
 | `frontend/package.json` | React 19, Vite 8, Tailwind v4, `@livekit/components-react`, shadcn, motion, lucide |
 | `frontend/vite.config.js` | Vite + React + Tailwind plugin, `@` alias, port 3000, `/token` proxy to :8000 |
@@ -109,7 +120,7 @@ App.tsx
         ├── AgentAudioVisualizerBar — animated audio visualizer synced to agent state
         ├── LanguageBar.tsx         — 11 language chips, highlights detected language
         ├── AgentChatTranscript     — auto-scrolling conversation bubbles
-        ├── AgentControlBar         — mic toggle, leave room
+        ├── AgentControlBar         — mic toggle, leave room (uses track-control/toggle + disconnect primitives)
         └── StartAudioButton        — browser audio unlock prompt
 ```
 
@@ -132,37 +143,30 @@ App.tsx
 
 ## Core patterns
 
-### TTS Session Manager (`agent.py:TTSSessionManager`)
-Centralized owner of all TTS websocket lifecycle. Design invariants:
-- ONE `sarvam.TTS` instance per language (lazily created, persistent for session lifetime)
-- Sarvam's supported TTS API manages pooled WebSockets across turns
-- Websockets are **never** closed between turns — only on confirmed language switch or shutdown
-- `async Lock` serializes close/remove transitions
-- `warm()` calls the supported `prewarm()` API
-
-### MultilingualTTS (`agent.py:MultilingualTTS`)
-- Extends `livekit.agents.tts.TTS` — drop-in TTS for LiveKit's `Agent`
-- Thin adapter over `TTSSessionManager` — delegates all lifecycle decisions
-- `synthesize()` → returns Sarvam `ChunkedStream` (HTTP POST, no websocket race risk)
-- `stream()` → returns Sarvam's native streaming implementation
-- Both retry up to `TTS_WS_MAX_RETRIES` times on transient failures
+### Single TTS instance (`agent.py`)
+- ONE `sarvam.TTS` created in `SchoolVoiceAgent.__init__()` (defaults to `hi-IN`) — Bulbul v3 is a unified multilingual model, so one instance serves all 11 languages
+- Language switches call `self._tts.update_options(target_language_code=..., speaker=...)` on the **same instance** — no new connection, no new instance, no reconnect latency
+- Sarvam's plugin (v1.6.4) owns WebSocket pooling and cancellation across turns via its public `stream()` API
+- `on_enter()` calls `prewarm()` before greeting; `on_exit()` calls `aclose()` and drains tracked background tasks
 
 ### TranscriptDedup (`voice_agent/conversation.py`)
 Deduplicates final transcript events via MD5 text hashing + configurable time window. Prevents repeated STT finals from triggering duplicate LLM/TTS cycles.
 
 ### Language detection flow (confirmed-language policy)
-1. STT runs with `language="unknown"` — Sarvam auto-detects
-2. `user_input_transcribed` event stores detected language as `_detected_language`
-3. `TranscriptDedup.is_duplicate(transcript)` drops repeated finals
-4. `LanguagePolicy` uses the detected language only to update `confirmed_lang`
-5. An explicit language request or a turn longer than five words switches immediately
+1. STT runs with `language="unknown"` — Sarvam auto-detects; first detection of a turn is stored as `_detected_language`
+2. `TranscriptDedup.is_duplicate(transcript)` drops repeated finals
+3. `LanguagePolicy` uses the detected language only to update `confirmed_lang`
+4. Explicit language requests are parsed from the transcript by regex, with a fast LLM fallback (2s timeout, never breaks the turn) for unusual phrasings
+5. An explicit request or a turn longer than five words switches immediately
 6. Two consecutive short turns in the same new language switch; alternating short turns reset the pending count
 7. TTS always speaks `confirmed_lang`, never the raw per-turn detection
+8. On switch: `update_options()` retargets the single TTS instance, and a fresh language-instruction system message is injected into the turn context — the framework's equivalence gate sees the context change and invalidates in-flight preemptive generation so the reply comes in the new language
+9. Transcripts are published to the frontend via the LiveKit data channel (agent messages carry `confirmed_lang`, not STT detection)
 
-### Filler suppression
-- `FillerFilter.is_filler()` checks: length < 4, exact match against 30+ filler patterns, or single/dual-word very-short utterances
-- When filler detected: **no LLM generation, no TTS, no state transition, no language recording**
-- Patterns include: hmm, uh, okay, haan, ji, kya, nahi, achha, theek hai, etc.
+### No filler suppression
+- `FILLER_PATTERNS` in `config.py` is **defined but unused** — no `FillerFilter` exists, and the agent never drops or filters user input. The LLM sees and responds to every utterance.
+- `config.py` deliberately excludes answer words like "haan", "nahi", "ji" — they are legitimate replies, not fillers
+- The pattern set is kept solely as documentation of Sarvam's per-language thinking sounds (hmm/umm/achha etc.)
 
 ### LanguagePolicy
 - `confirmed_lang` is the persistent TTS language for the session.
@@ -170,60 +174,73 @@ Deduplicates final transcript events via MD5 text hashing + configurable time wi
 - A detection from a turn with more than five words switches immediately.
 - Otherwise, two consecutive short turns in the same new language are required.
 - Flip-flopping languages (en→ta→en) resets the pending candidate and never switches.
-- `LANGUAGE_SWITCH_MODE=policy` is the default. Set it to `sarvam` to bypass this policy and use Sarvam's per-turn detection directly for TTS.
+- `LANGUAGE_SWITCH_MODE=policy` is the default. Set it to `sarvam` to bypass this policy and use Sarvam's per-turn detection directly for TTS (explicit-request detection is skipped in that mode).
+- Unit-tested in `tests/test_language_policy.py`.
 
 ### Turn detection
-- `AgentSession(vad=silero.VAD.load())` — Silero VAD for reliable speech detection
-- `EndpointingOptions(mode="dynamic", min_delay=0.05, max_delay=0.15)` — 50ms floor, 150ms cap
-- `alpha=0.6` — responsive EMA for fast adaptation to speaker cadence
-- `InterruptionOptions(min_duration=0.2)` — 200ms barge-in threshold
-- `PreemptiveGenerationOptions(enabled=True, preemptive_tts=True)` — start TTS as soon as LLM produces first tokens
-- Backchannel boundary: 300ms start, 1.5s end — suppresses spurious interruptions near speech boundaries
+- **Semantic turn detection by framework default** — we never pass `turn_detection=`, so `AgentSession` uses `inference.TurnDetector()` (agent_session.py:365-366): an **audio** semantic+acoustic end-of-turn model (semantic branch = audio encoder → LLM backbone; acoustic branch = prosody/timing; fused EOU probability with per-language thresholds). Audio-based → no STT transcript dependency, inherently multilingual (works for all 11 languages; v1-mini ships tuned thresholds incl. `hi` 0.3050, others fall back to the en 0.36 default). The deprecated text-based `livekit-plugins-turn-detector` is *not* used.
+- Silero VAD is the framework default for speech presence — `AgentSession` auto-loads `inference.VAD(model="silero")` (agent_session.py:414-415); the code does not pass `vad=` explicitly
+- `EndpointingOptions(mode="dynamic", min_delay=0.3, max_delay=0.8)` — 300ms floor, 800ms cap (silence backstop; merged over the framework's tighter streaming defaults because a streaming turn detector is active, turn.py:298-311)
+- `alpha=0.7` — responsive EMA for fast adaptation to speaker cadence
+- `InterruptionOptions(min_duration=0.3)` — 300ms barge-in threshold, with `resume_false_interruption` + `false_interruption_timeout=2.0`
+- `PreemptiveGenerationOptions(enabled=True, preemptive_tts=True, max_speech_duration=10.0, max_retries=3)` — start TTS as soon as LLM produces first tokens
+- Backchannel boundary: 0.3s start, 0.8s end — suppresses spurious interruptions near speech boundaries
 - For noisy environments: swap constants in `config.py` to the commented-out noisy values
+
+### STT resilience (`agent.py:stt_node`)
+- Overrides the default STT node to survive Sarvam WebSocket drops: on a retryable `APIStatusError`, replaces the dead STT with a fresh instance (`create_stt()`) and resumes after a short back-off
+- Up to 3 attempts (`MAX_STT_RETRIES`) before giving up; non-retryable errors re-raise immediately
+
+### Streaming LLM node (`agent.py:llm_node`)
+- Overrides the default LLM node to add per-token observability: logs the first token with measured TTFT, counts chunks/chars, and emits a Langfuse `llm-generation` span (model, input, output, ttft_ms, token/char counts, elapsed time)
 
 ### Context management (two-layer)
 When `MAX_CONTEXT_ITEMS` (50) is exceeded:
 1. System prompt + rolling summary (if available) + most recent `SLIDING_WINDOW_TURNS` (10) kept verbatim
-2. Older items asynchronously summarized via `utils/summarize.py` (Sarvam or OpenAI)
+2. Older items asynchronously summarized via `utils/summarize.py` (Sarvam, OpenAI, or Groq)
 3. Summary injected as a system message — agent retains full conversation context
+4. If the summarizer is already busy, evicted items are buffered in `_pending_summary_items` and merged into the next run — never silently dropped
+5. Background tasks are tracked for lifecycle cleanup (`track_bg` + cancel/drain in `on_exit`)
 
 ### LLM provider flexibility
 - `LLM_PROVIDER` env var selects: `"sarvam"` (default), `"openai"`, or `"groq"`
 - Sarvam: native `sarvam.LLM(model="sarvam-30b")`
 - OpenAI: `livekit.plugins.openai.LLM(model="gpt-4o-mini")`
 - Groq: OpenAI-compatible endpoint at `api.groq.com/openai/v1` with `llama-3.3-70b-versatile`
+- Provider config is validated at startup (fail-fast on missing key), with bounded SDK retries (`max_retries=2`)
 
 ### Langfuse observability
 - Per-session trace with root span (`voice-session`)
-- Per-turn spans (`user-turn`) with detected language, transcript length, final TTS language
+- Per-turn spans (`user-turn`) with detected language, transcript length, final TTS language, policy reason, pending count
 - STT spans with transcript + language metadata
 - LLM generation spans with TTFT, token count, char count, elapsed time
-- TTS spans with TTFB tracking
-- Tool call spans with duration + success/error
-- Events: language-switch (temporary vs hysteresis-confirmed), interruption start/resume/cancel
+- Tool call spans with duration + success/error (when tools are enabled)
+- Events: `language-switch` (from/to, reason, mode)
+- `LANGFUSE_TRACING_ENABLED=false` makes every telemetry call a no-op; `LANGFUSE_TIMEOUT` bounds requests
 
 ### Emotion handling
 - Sarvam TTS has **no SSML or emotion tags** (unlike Cartesia)
 - Emotion conveyed through LLM word choice + Indian interjections (see `SYSTEM_PROMPT`)
-- Pace/temperature adjustable via `tts.update_options()` per emotional context
+- Pace/temperature can be adjusted via `tts.update_options()` if needed, but the app relies on word choice
 
 ## Adding a new language
 
 1. Add a `LanguageConfig` entry in `config.py`
 2. Pick a Sarvam Bulbul v3 speaker for that language
-3. The `MultilingualTTS` pool will auto-create the TTS instance on first use
+3. Add the language keyword(s) to `LANGUAGE_KEYWORDS` in `voice_agent/conversation.py` for explicit-request parsing
+4. The single TTS instance switches to it automatically at runtime via `update_options()`
 
 ## Adding a new tool
 
 1. Define an async function in `utils/tools.py` with `@function_tool` decorator and `Annotated` parameters
-2. Register it in `SchoolVoiceAgent.__init__()` `tools=[...]` list
+2. Register it in `SchoolVoiceAgent.__init__()` `tools=[...]` list (currently commented out)
 3. Keep tool functions fast (< 3s) for sync tools; use `asyncio.create_task()` for slow tools
 4. Langfuse tool call spans are automatically created via `_get_tool_span()` / `_end_tool_span()`
 
 ## Key dependencies
 
 ### Python (`pyproject.toml`)
-- `livekit-agents[sarvam,silero]>=1.5` — LiveKit Agent framework + Sarvam/Silero plugins
+- `livekit-agents[sarvam,silero]==1.6.4` + `livekit-plugins-sarvam==1.6.4` + `livekit-plugins-silero==1.6.4` — LiveKit Agent framework + Sarvam/Silero plugins (pinned)
 - `livekit` — server SDK (token generation)
 - `fastapi` + `uvicorn[standard]` — token server + SPA serving
 - `python-dotenv` — env var loading
@@ -256,31 +273,34 @@ OPENAI_API_KEY=sk-...            # only if LLM_PROVIDER=openai
 OPENAI_MODEL=gpt-4o-mini         # only if LLM_PROVIDER=openai
 GROQ_API_KEY=gsk_...             # only if LLM_PROVIDER=groq
 GROQ_MODEL=llama-3.3-70b-versatile  # only if LLM_PROVIDER=groq
+LANGUAGE_SWITCH_MODE=policy      # "policy" (stable) or "sarvam" (raw per-turn detection)
 LANGFUSE_PUBLIC_KEY=pk-lf-...    # optional: Langfuse observability
 LANGFUSE_SECRET_KEY=sk-lf-...    # optional: Langfuse observability
 LANGFUSE_BASE_URL=https://cloud.langfuse.com  # optional
+LANGFUSE_TRACING_ENABLED=true    # set false to disable all tracing
+LANGFUSE_TIMEOUT=10              # seconds
 ```
 
 ## Design decisions
 
-- **Supported Sarvam lifecycle** — `TTSSessionManager` uses only `prewarm()`, `stream()`, and `aclose()`. Sarvam plugin v1.6.4 owns cancellation and its WebSocket pool, so there is no brittle private-field access.
-- **Confirmed-language switching** — `LanguagePolicy` ensures TTS never follows a raw one-turn detection. Explicit requests and long turns switch immediately; two matching short turns are required otherwise.
-- **Filler suppression** — Utterances matching 30+ filler patterns or shorter than 4 characters are dropped entirely: no LLM, no TTS, no state transition. Eliminates spurious "Hmm" → full pipeline activation.
+- **Supported Sarvam lifecycle** — the agent uses only public APIs: `prewarm()`, `stream()`, `update_options()`, and `aclose()`. Sarvam plugin v1.6.4 owns cancellation and its WebSocket pool, so there is no brittle private-field access.
+- **Single TTS instance** — one `sarvam.TTS` created at init; `update_options()` switches language per-turn on the same instance and WebSocket pool (Bulbul v3 is a unified multilingual model). No per-language instances, no reconnect latency on switch.
+- **Confirmed-language switching** — `LanguagePolicy` ensures TTS never follows a raw one-turn detection. Explicit requests (regex + LLM fallback) and long turns switch immediately; two matching short turns are required otherwise.
+- **No filler suppression** — the LLM sees every utterance; `FILLER_PATTERNS` is a vestigial constant never referenced by runtime code.
 - **Transcript deduplication** — `TranscriptDedup` uses MD5 hashing + time window to prevent repeated STT finals from triggering duplicate LLM/TTS cycles.
-- **Two-layer context** — Rolling summarization of older turns (async, background) + sliding window of recent turns. Maintains long conversation context without unbounded growth.
-- **Multi-provider LLM** — `LLM_PROVIDER` env var switches between Sarvam, OpenAI, and Groq without code changes. Groq uses OpenAI-compatible API.
-- **Langfuse observability** — Full tracing: session → turn → STT/LLM/TTS spans + tool calls + language-switch events. TTFT and TTFB tracked per generation.
-- **TurnHandlingOptions API** — uses the new non-deprecated `turn_handling=TurnHandlingOptions(endpointing=EndpointingOptions(...))` pattern with preemptive generation enabled.
-- **Silero VAD** — separate VAD model (`vad=silero.VAD.load()`) for reliable turn detection, following LiveKit's recommended pattern.
-- **Aggressive endpointing** — `min_delay=50ms`, `max_delay=150ms`, `alpha=0.6`, `mode="dynamic"` — tuned for fast Indian-language turn-taking with minimal silence gaps.
-- **Preemptive TTS** — TTS starts as soon as LLM produces first tokens, reducing time-to-first-audio.
-- **TTS pool, not single TTS with `update_options()`** — avoids WebSocket reconnect latency when switching languages mid-conversation. One persistent `sarvam.TTS` per language.
-- **Sync prewarm** — `MultilingualTTS.prewarm()` is synchronous to match LiveKit's `TTS` base class signature. Hot languages (hi-IN, en-IN) prewarmed on agent entry.
-- **Noisy environment config** — `config.py` has commented-out overrides (300ms endpointing, 600ms max) for background-noise-heavy settings.
+- **Two-layer context** — Rolling summarization of older turns (async, background, length-capped) + sliding window of recent turns, with overflow buffering while the summarizer is busy. Maintains long conversation context without unbounded growth.
+- **Multi-provider LLM** — `LLM_PROVIDER` env var switches between Sarvam, OpenAI, and Groq without code changes. Groq uses OpenAI-compatible API. Rolling summaries use the same selected provider.
+- **Langfuse observability** — Full tracing: session → turn → STT/LLM spans + tool calls + language-switch events. TTFT tracked per LLM generation. Tracible overall latency via session span.
+- **TurnHandlingOptions API** — uses the new non-deprecated `turn_handling=TurnHandlingOptions(endpointing=EndpointingOptions(...), interruption=InterruptionOptions(...), preemptive_generation=PreemptiveGenerationOptions(...))` pattern; `turn_detection` is intentionally *not* passed so the framework default `inference.TurnDetector()` (audio semantic+acoustic EOT model) applies.
+- **Silero VAD** — framework default VAD (`inference.VAD(model="silero")` auto-loaded by `AgentSession`); relies on LiveKit's recommended pattern without manual wiring.
+- **Conversational endpointing** — `min_delay=300ms`, `max_delay=800ms`, `alpha=0.7`, `mode="dynamic"` — tuned for fast Indian-language turn-taking while tolerating natural pauses.
+- **Preemptive TTS** — TTS starts as soon as LLM produces first tokens, reducing time-to-first-audio; language-instruction injection invalidates stale preemptive audio via the framework's equivalence gate.
+- **STT WebSocket resilience** — `stt_node` override recreates the STT instance and resumes the session on retryable drops (up to 3 attempts) instead of tearing the job down.
+- **Sync prewarm** — `on_enter()` calls `prewarm()` before generating the greeting so the first reply has no connection latency.
+- **Noisy environment config** — `config.py` has commented-out overrides (300ms min endpointing, 600ms max, alpha 0.9, wider backchannel boundary) for background-noise-heavy settings.
 - **React 19 + TypeScript + Tailwind v4 frontend** — `@livekit/components-react` provides session/agent hooks, shadcn/ui for consistent component styling, `TokenSource.endpoint('/token')` for auth.
 - **SPA static serving** — `server.py` serves built frontend from `frontend/dist/` with SPA fallback (404 → index.html). Vite dev proxies `/token` to backend.
 - **Text-based emotion** — Sarvam lacks SSML; the LLM conveys emotion through word choice and Indian interjections.
-- **Data messages to frontend** — agent publishes `{type: "transcript", role, text, language}` via LiveKit data channel for chat bubbles and language highlighting.
-- **`linear16` codec, not mp3** — `output_audio_codec="linear16"` uses raw PCM passthrough (no per-chunk decode hop), per Sarvam's official LiveKit best-practices. `"wav"` is blocked (Sarvam returns raw PCM, no WAV container) and `"mp3"` decode-glitches at chunk seams, causing stuttering audio that looks like a network issue (see livekit/agents#1454).
-- **Stale WebSocket retry** — `synthesize()` and `stream()` retry up to `TTS_WS_MAX_RETRIES` times on failure. ConnectionPool handles stale connection recovery internally.
-- **`target_language_code` propagation** — `update_options()` passes `target_language_code` through to the underlying `sarvam.TTS.update_options()` so the internal opts stay consistent with the wrapper's language routing.
+- **Data messages to frontend** — agent publishes `{type: "transcript", role, text, language}` via LiveKit data channel for chat bubbles and language highlighting; agent messages use `confirmed_lang`, not raw STT detection.
+- **`linear16` codec, not mp3** — `output_audio_codec="linear16"` uses raw PCM passthrough (no per-chunk decode hop), per Sarvam's official LiveKit best-practices. `"wav"` is broken (Sarvam returns raw PCM, no WAV container) and `"mp3"` decode-glitches at chunk seams, causing stuttering audio that looks like a network issue (see livekit/agents#1454).
+- **Unit tests** — `tests/test_language_policy.py` covers the confirmed-language policy (explicit requests, long-turn switching, flip-flop reset).

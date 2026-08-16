@@ -639,20 +639,20 @@ async def entrypoint(ctx: JobContext) -> None:
         turn_handling=TurnHandlingOptions(
             endpointing=EndpointingOptions(
                 mode=ENDPOINTING_MODE,
-                min_delay=ENDPOINTING_MIN_DELAY,   # 50ms — aggressive floor
-                max_delay=ENDPOINTING_MAX_DELAY,   # 150ms — tight cap (was 250ms)
-                alpha=ENDPOINTING_ALPHA,           # 0.6 — responsive EMA (was 0.7)
+                min_delay=ENDPOINTING_MIN_DELAY,   # 300ms — conversational floor
+                max_delay=ENDPOINTING_MAX_DELAY,   # 800ms — cap for slower cadence
+                alpha=ENDPOINTING_ALPHA,           # 0.7 — responsive EMA
             ),
             interruption=InterruptionOptions(
                 enabled=True,
-                min_duration=INTERRUPTION_MIN_DURATION,  # 200ms barge-in
+                min_duration=INTERRUPTION_MIN_DURATION,  # 300ms barge-in
                 min_words=0,
                 discard_audio_if_uninterruptible=True,
                 resume_false_interruption=True,
                 false_interruption_timeout=2.0,
                 backchannel_boundary=(
-                    BACKCHANNEL_BOUNDARY_START,  # 300ms
-                    BACKCHANNEL_BOUNDARY_END,    # 1.5s
+                    BACKCHANNEL_BOUNDARY_START,  # 0.3s after speech start
+                    BACKCHANNEL_BOUNDARY_END,    # 0.8s before speech end
                 ),
             ),
             preemptive_generation=PreemptiveGenerationOptions(
