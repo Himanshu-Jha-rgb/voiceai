@@ -119,6 +119,7 @@ App.tsx
     └── AgentUI
         ├── AgentAudioVisualizerBar — animated audio visualizer synced to agent state
         ├── LanguageBar.tsx         — 11 language chips, highlights detected language
+        ├── SessionSettings.tsx     — pre-call controls: language-switch mode (Stable/Instant) + preemptive toggle
         ├── AgentChatTranscript     — auto-scrolling conversation bubbles
         ├── AgentControlBar         — mic toggle, leave room (uses track-control/toggle + disconnect primitives)
         └── StartAudioButton        — browser audio unlock prompt
@@ -176,6 +177,12 @@ Deduplicates final transcript events via MD5 text hashing + configurable time wi
 - Flip-flopping languages (en→ta→en) resets the pending candidate and never switches.
 - `LANGUAGE_SWITCH_MODE=policy` is the default. Set it to `sarvam` to bypass this policy and use Sarvam's per-turn detection directly for TTS (explicit-request detection is skipped in that mode).
 - Unit-tested in `tests/test_language_policy.py`.
+
+### Per-session settings (frontend controls)
+- The frontend `SessionSettings` card (language-switch mode + preemptive generation) ships both knobs per session via LiveKit **participant attributes**: `useSession(tokenSource, { participantAttributes: { lang_mode, preemptive } })` → `TokenSource` POSTs a protojson `TokenSourceRequest` → `server.py /token` normalizes (`_session_attributes`) and puts them in the JWT via `with_attributes()` → the entrypoint reads them with `_read_session_attributes(ctx)` (via `ctx.wait_for_participant()`).
+- `lang_mode` accepts `policy`/`sarvam`; anything else (or missing) falls back to `LANGUAGE_SWITCH_MODE` env. Replaces the module-level constant with per-session `agent._lang_switch_mode`.
+- `preemptive` accepts `1`/`true`/`0`/`false`; unset falls back to `PREEMPTIVE_GENERATION` env. When off, both `PreemptiveGenerationOptions.enabled` and `preemptive_tts` are `False`.
+- Both values are logged at session start and recorded in the Langfuse `voice-session` root span metadata.
 
 ### Turn detection
 - **Semantic turn detection by framework default** — we never pass `turn_detection=`, so `AgentSession` uses `inference.TurnDetector()` (agent_session.py:365-366): an **audio** semantic+acoustic end-of-turn model (semantic branch = audio encoder → LLM backbone; acoustic branch = prosody/timing; fused EOU probability with per-language thresholds). Audio-based → no STT transcript dependency, inherently multilingual (works for all 11 languages; v1-mini ships tuned thresholds incl. `hi` 0.3050, others fall back to the en 0.36 default). The deprecated text-based `livekit-plugins-turn-detector` is *not* used.

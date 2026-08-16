@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useSession, useAgent, type UseSessionReturn } from '@livekit/components-react';
 import { TokenSource, ConnectionState } from 'livekit-client';
 import { AgentSessionProvider } from '@/components/agents-ui/agent-session-provider';
@@ -7,13 +7,31 @@ import { AgentChatTranscript } from '@/components/agents-ui/agent-chat-transcrip
 import { AgentAudioVisualizerBar } from '@/components/agents-ui/agent-audio-visualizer-bar';
 import { StartAudioButton } from '@/components/agents-ui/start-audio-button';
 import { LanguageBar } from '@/components/LanguageBar';
+import {
+  SessionSettings,
+  type LanguageSwitchMode,
+} from '@/components/SessionSettings';
 import { useTranscripts } from '@/hooks/useTranscripts';
 import { Button } from '@/components/ui/button';
 import { Phone, Loader2, AlertCircle } from 'lucide-react';
 
 const tokenSource = TokenSource.endpoint('/token');
 
-function AgentUI({ session }: { session: UseSessionReturn }) {
+interface AgentUIProps {
+  session: UseSessionReturn;
+  langMode: LanguageSwitchMode;
+  onLangModeChange: (mode: LanguageSwitchMode) => void;
+  preemptive: boolean;
+  onPreemptiveChange: (enabled: boolean) => void;
+}
+
+function AgentUI({
+  session,
+  langMode,
+  onLangModeChange,
+  preemptive,
+  onPreemptiveChange,
+}: AgentUIProps) {
   const { state: agentState } = useAgent();
   const { messages, detectedLanguage } = useTranscripts();
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -70,12 +88,18 @@ function AgentUI({ session }: { session: UseSessionReturn }) {
       )}
 
       {!isConnected ? (
-        /* ── Not connected: show connect button ── */
-        <div className="flex flex-col items-center gap-4 mt-4">
+        /* ── Not connected: show settings + connect button ── */
+        <div className="flex flex-col items-center gap-4 mt-4 w-full">
           <AgentAudioVisualizerBar
             state={agentState}
             size="lg"
             className="text-primary opacity-40"
+          />
+          <SessionSettings
+            langMode={langMode}
+onLangModeChange={onLangModeChange}
+            preemptive={preemptive}
+onPreemptiveChange={onPreemptiveChange}
           />
           <Button
             size="lg"
@@ -139,11 +163,28 @@ function AgentUI({ session }: { session: UseSessionReturn }) {
 }
 
 export default function App() {
-  const session = useSession(tokenSource);
+  const [langMode, setLangMode] = useState<LanguageSwitchMode>('policy');
+  const [preemptive, setPreemptive] = useState(true);
+  const sessionOptions = useMemo(
+    () => ({
+      participantAttributes: {
+        lang_mode: langMode,
+        preemptive: preemptive ? '1' : '0',
+      },
+    }),
+    [langMode, preemptive],
+  );
+  const session = useSession(tokenSource, sessionOptions);
 
   return (
     <AgentSessionProvider session={session}>
-      <AgentUI session={session} />
+      <AgentUI
+        session={session}
+        langMode={langMode}
+        onLangModeChange={setLangMode}
+        preemptive={preemptive}
+        onPreemptiveChange={setPreemptive}
+      />
     </AgentSessionProvider>
   );
 }

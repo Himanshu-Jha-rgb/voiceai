@@ -99,6 +99,33 @@ def trace_context(trace_id: str | None, parent_span_id: str | None = None) -> Tr
     return context
 
 
+async def _read_session_attributes(ctx: JobContext) -> dict[str, str]:
+    """Read the joining user's JWT participant attributes (set by server.py
+    from the frontend session settings). Returns {} when unavailable so every
+    session falls back to the env-configured defaults."""
+    try:
+        participant = await asyncio.wait_for(ctx.wait_for_participant(), timeout=30.0)
+    except Exception:
+        return {}
+    return dict(participant.attributes or {})
+
+
+def _resolve_lang_mode(raw: str | None) -> str:
+    """Resolve the frontend lang_mode attr; fall back to the env default."""
+    mode = (raw or "").strip().lower()
+    return mode if mode in {"policy", "sarvam"} else LANGUAGE_SWITCH_MODE
+
+
+def _resolve_preemptive(raw: str | None) -> bool:
+    """Resolve the frontend preemptive attr; fall back to the env default."""
+    value = (raw or "").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return PREEMPTIVE_GENERATION
+
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SchoolVoiceAgent
@@ -149,6 +176,10 @@ class SchoolVoiceAgent(Agent):
         self._detected_language: Optional[str] = None
         self._detected_transcript: str = ""
         self._transcript_dedup = TranscriptDedup(DEDUP_WINDOW_SECONDS, DEDUP_MAX_HISTORY)
+
+        # Per-session settings (defaults from env; overridden in the entrypoint
+        # from the frontend's participant attributes).
+        self._lang_switch_mode: str = LANGUAGE_SWITCH_MODE
 
         self._language_policy = LanguagePolicy(confirmed_lang="hi-IN")
 
@@ -323,7 +354,7 @@ class SchoolVoiceAgent(Agent):
         )
 
         previous_language = self._current_language
-        if LANGUAGE_SWITCH_MODE == "sarvam":
+        if self._lang_switch_mode == "sarvam":
             # Direct mode delegates language choice to Sarvam's per-turn STT
             # detection, preserving the current language for unknown or
             # unsupported results. Plain by design — no explicit-request
@@ -358,14 +389,14 @@ class SchoolVoiceAgent(Agent):
                     "from": previous_language,
                     "to": target_language,
                     "reason": decision_reason,
-                    "mode": LANGUAGE_SWITCH_MODE,
+                    "mode": self._lang_switch_mode,
                 }
             )
             logger.info(
                 "Language switched: %s → %s (mode=%s, reason=%s)",
                 previous_language,
                 target_language,
-                LANGUAGE_SWITCH_MODE,
+                self._lang_switch_mode,
                 decision_reason,
             )
             # update_options() changes language on the same WebSocket pool —
@@ -388,7 +419,7 @@ class SchoolVoiceAgent(Agent):
                 LANGUAGE_CODE_MAP.get(target_language, DEFAULT_LANGUAGE).code,
             )
         elif (
-            LANGUAGE_SWITCH_MODE == "policy"
+            self._lang_switch_mode == "policy"
             and self._detected_language
             and self._detected_language != target_language
         ):
@@ -404,7 +435,7 @@ class SchoolVoiceAgent(Agent):
             "detected_language": self._detected_language,
             "transcript_length": transcript_length,
             "final_tts_language": target_language,
-            "language_switch_mode": LANGUAGE_SWITCH_MODE,
+            "language_switch_mode": self._lang_switch_mode,
             "language_policy_reason": decision_reason,
             "language_pending_count": pending_count,
         })
@@ -616,6 +647,18 @@ class SchoolVoiceAgent(Agent):
 async def entrypoint(ctx: JobContext) -> None:
     logger.info(f"User connected to room: {ctx.room.name}")
 
+    # Per-session settings from the frontend (participant attributes set by
+    # server.py from the TokenSource request). Falls back to env defaults.
+    session_attrs = await _read_session_attributes(ctx)
+    lang_switch_mode = _resolve_lang_mode(session_attrs.get("lang_mode"))
+    preemptive_enabled = _resolve_preemptive(session_attrs.get("preemptive"))
+    if session_attrs:
+        logger.info(
+            "Session settings from frontend: lang_mode=%s preemptive=%s",
+            lang_switch_mode,
+            preemptive_enabled,
+        )
+
     session_trace_id = langfuse_client.create_trace_id()
     
     root_span = langfuse_client.start_observation(
@@ -626,6 +669,8 @@ async def entrypoint(ctx: JobContext) -> None:
             "llm_model": active_model(),
             "stt_model": STT_MODEL,
             "tts_model": TTS_MODEL,
+            "language_switch_mode": lang_switch_mode,
+            "preemptive_generation": preemptive_enabled,
         }
     )
 
@@ -633,6 +678,7 @@ async def entrypoint(ctx: JobContext) -> None:
     agent._session_trace_id = session_trace_id
     agent._root_span_id = root_span.id
     agent._active_turn_span_id = root_span.id
+    agent._lang_switch_mode = lang_switch_mode
     active_turn_span_var.set({"trace_id": session_trace_id, "span_id": root_span.id})
 
     session = AgentSession(
@@ -656,8 +702,8 @@ async def entrypoint(ctx: JobContext) -> None:
                 ),
             ),
             preemptive_generation=PreemptiveGenerationOptions(
-                enabled=PREEMPTIVE_GENERATION,
-                preemptive_tts=PREEMPTIVE_TTS,
+                enabled=preemptive_enabled,
+                preemptive_tts=preemptive_enabled and PREEMPTIVE_TTS,
                 max_speech_duration=10.0,
                 max_retries=3,
             ),
