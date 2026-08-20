@@ -69,7 +69,7 @@ TTS_WS_MAX_RETRIES = 2  # stale WebSocket recovery attempts
 LLM_MODEL = os.getenv("SARVAM_LLM_MODEL", "sarvam-105b-conversations")  # Sarvam model name (only used when provider is "sarvam")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "sarvam")  # "sarvam", "openai", or "groq"
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # OpenAI model
-DEFAULT_GROQ_MODEL = "qwen/qwen3.6-27b"
+DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_MODEL = os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL)  # Groq model
 
 # Model catalogs exposed to the frontend selector (provider -> models).
@@ -77,7 +77,7 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL)  # Groq model
 PROVIDER_MODELS: dict[str, list[str]] = {
     "sarvam": ["sarvam-105b-conversations"],
     "openai": ["gpt-4o-mini", "gpt-4o"],
-    "groq": ["qwen/qwen3.6-27b", "openai/gpt-oss-20b"],
+    "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
 }
 
 # ── Turn detection (aggressive conversational tuning) ─────────────────────────

@@ -28,6 +28,7 @@ _SCHEMA = {
     "llm_provider": ("sarvam", "openai", "groq"),
     # Model is free-form (providers add models faster than catalogs update).
     "llm_model": ("*",),
+    "persona": ("*",),
 }
 
 
@@ -54,6 +55,7 @@ async def get_token(
     preemptive: str | None = None,
     llm_provider: str | None = None,
     llm_model: str | None = None,
+    persona: str | None = None,
 ):
     """Generate a LiveKit access token for the frontend to join a room."""
     # A completed agent session is not reused by LiveKit's React useSession
@@ -72,6 +74,7 @@ async def get_token(
             preemptive=preemptive,
             llm_provider=llm_provider,
             llm_model=llm_model,
+            persona=persona,
         )
     ).with_grants(
         api.VideoGrants(
