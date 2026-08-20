@@ -221,7 +221,12 @@ class SchoolVoiceAgent(Agent):
         Used on the temp context in `on_user_turn_completed` to invalidate an
         in-flight preemptive generation via the framework's equivalence gate.
         Replacement (never append) guarantees at most one instance exists.
+
+        No-op in ``sarvam`` mode — the LLM is left to Sarvam's raw per-turn
+        detection without any manual language instruction.
         """
+        if self._lang_switch_mode == "sarvam":
+            return
         kept = [
             item
             for item in ctx.items
@@ -243,7 +248,13 @@ class SchoolVoiceAgent(Agent):
         placed immediately before the last user message (nearest = strongest).
 
         The copy is never persisted; history-bias re-assertion happens per call.
+
+        In ``sarvam`` mode the context is returned untouched — the language
+        instruction is not injected and the LLM follows Sarvam's per-turn
+        detection freely.
         """
+        if self._lang_switch_mode == "sarvam":
+            return ctx
         items = [
             item
             for item in ctx.items
@@ -741,8 +752,13 @@ async def entrypoint(ctx: JobContext) -> None:
             agent._detected_language = language
 
         if transcript and is_final:
-            # Deduplicate: ignore repeated finals within the time window
-            if agent._transcript_dedup.is_duplicate(transcript):
+            # Deduplicate: ignore repeated finals within the time window.
+            # Skipped in sarvam mode — the raw STT stream is not filtered
+            # by manual machinery there.
+            if (
+                agent._lang_switch_mode != "sarvam"
+                and agent._transcript_dedup.is_duplicate(transcript)
+            ):
                 logger.debug(
                     f"Duplicate final transcript dropped: '{transcript[:40]}'"
                 )
