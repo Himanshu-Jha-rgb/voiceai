@@ -19,7 +19,7 @@ from livekit.agents.voice.turn import (
     InterruptionOptions,
     PreemptiveGenerationOptions,
 )
-from livekit.plugins import sarvam
+from livekit.plugins import sarvam, silero
 from livekit.agents import inference
 from langfuse.types import TraceContext
 
@@ -777,6 +777,7 @@ async def entrypoint(ctx: JobContext) -> None:
 
     session = AgentSession(
         turn_detection="vad",
+        vad=silero.VAD.load(),
         turn_handling=TurnHandlingOptions(
             endpointing=EndpointingOptions(
                 mode=ENDPOINTING_MODE,

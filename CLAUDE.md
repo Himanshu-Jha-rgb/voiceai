@@ -91,7 +91,7 @@ Exposes port 7860. Startup runs both `agent.py start` (background) and `uvicorn 
 | `server.py` | FastAPI: GET/POST `/token` (LiveKit JWT), SPA static file serving |
 | `config.py` | `LanguageConfig` dataclass, 11 languages, STT/TTS/LLM/endpointing/hysteresis constants (filler patterns defined but unused) |
 | `tests/test_language_policy.py` | `LanguagePolicy` unit tests |
-| `pyproject.toml` | Python deps pinned to `livekit-agents[sarvam,silero]==1.6.4`, `langfuse`, `fastapi`, etc. |
+| `pyproject.toml` | Python deps pinned to `livekit-agents[sarvam,silero]==1.6.0`, `langfuse`, `fastapi`, etc. |
 | `utils/prompts.py` | `SYSTEM_PROMPT` (voice-optimised) + `GREETING_INSTRUCTIONS` + `LANGUAGE_INSTRUCTION_TEMPLATE` |
 | `utils/tools.py` | 5 `@function_tool` functions (currently commented out in agent) + Langfuse span helpers |
 | `utils/summarize.py` | Rolling conversation summarization (Sarvam or OpenAI/Groq) |
@@ -149,7 +149,7 @@ App.tsx
 ### Single TTS instance (`agent.py`)
 - ONE `sarvam.TTS` created in `SchoolVoiceAgent.__init__()` (defaults to `hi-IN`) — Bulbul v3 is a unified multilingual model, so one instance serves all 11 languages
 - Language switches call `self._tts.update_options(target_language_code=..., speaker=...)` on the **same instance** — no new connection, no new instance, no reconnect latency
-- Sarvam's plugin (v1.6.4) owns WebSocket pooling and cancellation across turns via its public `stream()` API
+- Sarvam's plugin (v1.6.0) owns WebSocket pooling and cancellation across turns via its public `stream()` API
 - `on_enter()` calls `prewarm()` before greeting; `on_exit()` calls `aclose()` and drains tracked background tasks
 
 ### TranscriptDedup (`voice_agent/conversation.py`)
@@ -188,7 +188,7 @@ Deduplicates final transcript events via MD5 text hashing + configurable time wi
 
 ### Turn detection
 - **VAD-based turn detection** — `turn_detection="vad"` is passed explicitly, so `AgentSession` uses Silero VAD + the dynamic endpointing backstop for end-of-turn, *not* `inference.TurnDetector()` (audio semantic+acoustic EOT model: audio encoder → LLM backbone). The semantic model loads hundreds of MB at session start and OOM-kills the 1GB-capped Railway trial container (measured: 0.79 GB baseline → 0.93 GB at session start → SIGKILL -9). VAD-based detection keeps bilingual/multilingual behavior (VAD is language-agnostic) at a fraction of the memory.
-- Silero VAD is the framework default for speech presence — `AgentSession` auto-loads `inference.VAD(model="silero")` (agent_session.py:414-415); the code does not pass `vad=` explicitly
+- Silero VAD is passed explicitly — `vad=silero.VAD.load()` (1.6.0 does not auto-provision a VAD; 1.6.4 did via `inference.VAD(model="silero")`, but is pinned down to 1.6.0 to avoid the 1.6.2+ memory regression)
 - `EndpointingOptions(mode="dynamic", min_delay=0.3, max_delay=0.8)` — 300ms floor, 800ms cap (silence backstop; merged over the framework's tighter streaming defaults because a streaming turn detector is active, turn.py:298-311)
 - `alpha=0.7` — responsive EMA for fast adaptation to speaker cadence
 - `InterruptionOptions(min_duration=0.3)` — 300ms barge-in threshold, with `resume_false_interruption` + `false_interruption_timeout=2.0`
@@ -249,7 +249,7 @@ When `MAX_CONTEXT_ITEMS` (50) is exceeded:
 ## Key dependencies
 
 ### Python (`pyproject.toml`)
-- `livekit-agents[sarvam,silero]==1.6.4` + `livekit-plugins-sarvam==1.6.4` + `livekit-plugins-silero==1.6.4` — LiveKit Agent framework + Sarvam/Silero plugins (pinned)
+- `livekit-agents[sarvam,silero]==1.6.0` + `livekit-plugins-sarvam==1.6.0` + `livekit-plugins-silero==1.6.0` — LiveKit Agent framework + Sarvam/Silero plugins (pinned)
 - `livekit` — server SDK (token generation)
 - `fastapi` + `uvicorn[standard]` — token server + SPA serving
 - `python-dotenv` — env var loading
@@ -292,7 +292,7 @@ LANGFUSE_TIMEOUT=10              # seconds
 
 ## Design decisions
 
-- **Supported Sarvam lifecycle** — the agent uses only public APIs: `prewarm()`, `stream()`, `update_options()`, and `aclose()`. Sarvam plugin v1.6.4 owns cancellation and its WebSocket pool, so there is no brittle private-field access.
+- **Supported Sarvam lifecycle** — the agent uses only public APIs: `prewarm()`, `stream()`, `update_options()`, and `aclose()`. Sarvam plugin v1.6.0 owns cancellation and its WebSocket pool, so there is no brittle private-field access.
 - **Single TTS instance** — one `sarvam.TTS` created at init; `update_options()` switches language per-turn on the same instance and WebSocket pool (Bulbul v3 is a unified multilingual model). No per-language instances, no reconnect latency on switch.
 - **Confirmed-language switching** — `LanguagePolicy` ensures TTS never follows a raw one-turn detection. Explicit requests (regex + LLM fallback) and long turns switch immediately; two matching short turns are required otherwise.
 - **No filler suppression** — the LLM sees every utterance; `FILLER_PATTERNS` is a vestigial constant never referenced by runtime code.
@@ -301,7 +301,7 @@ LANGFUSE_TIMEOUT=10              # seconds
 - **Multi-provider LLM** — `LLM_PROVIDER` env var switches between Sarvam, OpenAI, and Groq without code changes. Groq uses OpenAI-compatible API. Rolling summaries use the same selected provider.
 - **Langfuse observability** — Full tracing: session → turn → STT/LLM spans + tool calls + language-switch events. TTFT tracked per LLM generation. Tracible overall latency via session span.
 - **TurnHandlingOptions API** — uses the new non-deprecated `turn_handling=TurnHandlingOptions(endpointing=EndpointingOptions(...), interruption=InterruptionOptions(...), preemptive_generation=PreemptiveGenerationOptions(...))` pattern with `turn_detection="vad"` (VAD-based EOU; the semantic `inference.TurnDetector()` is avoided because it OOM-kills the 1GB-capped Railway trial container).
-- **Silero VAD** — framework default VAD (`inference.VAD(model="silero")` auto-loaded by `AgentSession`); relies on LiveKit's recommended pattern without manual wiring.
+- **Silero VAD** — explicit `vad=silero.VAD.load()`; pinned to livekit-agents 1.6.0 to stay on the silero-plugin VAD and avoid the 1.6.2+ memory regression (1.6.0: ~700MB baseline, 1.6.4: >1GB per LiveKit community reports; local import footprint ~165MB).
 - **Conversational endpointing** — `min_delay=300ms`, `max_delay=800ms`, `alpha=0.7`, `mode="dynamic"` — tuned for fast Indian-language turn-taking while tolerating natural pauses.
 - **Preemptive TTS** — TTS starts as soon as LLM produces first tokens, reducing time-to-first-audio; language-instruction injection invalidates stale preemptive audio via the framework's equivalence gate.
 - **STT WebSocket resilience** — `stt_node` override recreates the STT instance and resumes the session on retryable drops (up to 3 attempts) instead of tearing the job down.
