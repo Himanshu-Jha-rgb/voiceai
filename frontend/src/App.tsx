@@ -196,7 +196,7 @@ function AgentUI({
 
 export default function App() {
   const [langMode, setLangMode] = useState<LanguageSwitchMode>('policy');
-  const [preemptive, setPreemptive] = useState(true);
+  const [preemptive, setPreemptive] = useState(false);
   const [llmProvider, setLlmProvider] = useState<LlmProvider>('groq');
   const [llmModel, setLlmModel] = useState<string>(
     PROVIDER_MODELS.groq[0],

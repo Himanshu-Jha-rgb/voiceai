@@ -157,7 +157,17 @@ export function SessionSettings({
         <div className="min-w-0">
           <p className="text-sm font-medium">Fast replies</p>
           <p className="text-xs text-muted-foreground">
-            Preemptive generation — reply as soon as the LLM starts talking
+            {preemptive ? (
+              <>
+                <span className="font-medium text-amber-600">
+                  Preemptive on — faster first audio, but lower accuracy:
+                </span>{' '}
+                replies can start before the full answer is known, cut off
+                mid-word on interruptions, and waste tokens if you barge in.
+              </>
+            ) : (
+              <>Waits for the complete response before speaking — more accurate. Recommended.</>
+            )}
           </p>
         </div>
         <Toggle
