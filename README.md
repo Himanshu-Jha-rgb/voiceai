@@ -190,9 +190,9 @@ The agent supports three LLM providers, selected via the `LLM_PROVIDER` environm
 
 | Provider | Model | Setup |
 |---|---|---|
-| `sarvam` (default) | `sarvam-30b` | Just needs `SARVAM_API_KEY` |
+| `sarvam` (default) | `sarvam-105b-conversations` | Just needs `SARVAM_API_KEY` |
 | `openai` | `gpt-4o-mini` | Set `OPENAI_API_KEY` |
-| `groq` | `llama-3.3-70b-versatile` | Set `GROQ_API_KEY` |
+| `groq` | `openai/gpt-oss-20b` | Set `GROQ_API_KEY` |
 
 Groq uses its OpenAI-compatible endpoint and is streamed directly into TTS. The provider factory validates the selected provider key at startup and applies bounded SDK retries. Rolling summaries use the same selected provider, so Groq sessions do not unexpectedly send conversation history to another LLM.
 

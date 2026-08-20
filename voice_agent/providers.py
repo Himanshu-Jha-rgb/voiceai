@@ -47,12 +47,17 @@ def validate_provider_configuration() -> None:
 def create_llm():
     """Build the LiveKit-compatible LLM with bounded retries and timeouts."""
     validate_provider_configuration()
-    if LLM_PROVIDER == "sarvam":
-        return sarvam.LLM(model=LLM_MODEL)
 
     from livekit.plugins.openai import LLM as OpenAILLM
 
     common = {"model": active_model(), "max_retries": 2}
+    if LLM_PROVIDER == "sarvam":
+        return OpenAILLM(
+            **common,
+            base_url="https://api.sarvam.ai/v1",
+            api_key=os.environ["SARVAM_API_KEY"],
+            extra_headers={"api-subscription-key": os.environ["SARVAM_API_KEY"]},
+        )
     if LLM_PROVIDER == "groq":
         return OpenAILLM(
             **common,

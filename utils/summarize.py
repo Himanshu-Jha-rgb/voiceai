@@ -110,7 +110,7 @@ async def _summarize_openai_compatible(text: str, provider: str) -> Optional[str
         timeout=20,
     )
     response = await client.chat.completions.create(
-        model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile") if is_groq else os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b") if is_groq else os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         messages=[
             {"role": "system", "content": _SUMMARIZATION_PROMPT},
             {"role": "user", "content": text},
@@ -135,13 +135,13 @@ async def _summarize_sarvam(text: str) -> Optional[str]:
 
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
-                "https://api.sarvam.ai/chat/completions",
+                "https://api.sarvam.ai/v1/chat/completions",
                 headers={
-                    "API-Key": api_key,
+                    "api-subscription-key": api_key,
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "sarvam-30b",
+                    "model": os.getenv("SARVAM_LLM_MODEL", "sarvam-105b-conversations"),
                     "messages": [
                         {"role": "system", "content": _SUMMARIZATION_PROMPT},
                         {"role": "user", "content": text},

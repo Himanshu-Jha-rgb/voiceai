@@ -56,10 +56,10 @@ TTS_MAX_CHUNK_LENGTH = 150
 TTS_WS_MAX_RETRIES = 2  # stale WebSocket recovery attempts
 
 # LLM
-LLM_MODEL = os.getenv("SARVAM_LLM_MODEL", "sarvam-30b")  # Sarvam model name (only used when provider is "sarvam")
+LLM_MODEL = os.getenv("SARVAM_LLM_MODEL", "sarvam-105b-conversations")  # Sarvam model name (only used when provider is "sarvam")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "sarvam")  # "sarvam", "openai", or "groq"
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # OpenAI model
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")  # Groq model
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")  # Groq model
 
 # ── Turn detection (aggressive conversational tuning) ─────────────────────────
 

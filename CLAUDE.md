@@ -211,9 +211,9 @@ When `MAX_CONTEXT_ITEMS` (50) is exceeded:
 
 ### LLM provider flexibility
 - `LLM_PROVIDER` env var selects: `"sarvam"` (default), `"openai"`, or `"groq"`
-- Sarvam: native `sarvam.LLM(model="sarvam-30b")`
+- Sarvam: OpenAI-compatible `openai.LLM` at `https://api.sarvam.ai/v1` with `sarvam-105b-conversations` (livekit-sarvam plugin's hardcoded model whitelist rejects it)
 - OpenAI: `livekit.plugins.openai.LLM(model="gpt-4o-mini")`
-- Groq: OpenAI-compatible endpoint at `api.groq.com/openai/v1` with `llama-3.3-70b-versatile`
+- Groq: OpenAI-compatible endpoint at `api.groq.com/openai/v1` with `openai/gpt-oss-20b`
 - Provider config is validated at startup (fail-fast on missing key), with bounded SDK retries (`max_retries=2`)
 
 ### Langfuse observability
@@ -279,7 +279,7 @@ LLM_PROVIDER=sarvam              # "sarvam", "openai", or "groq"
 OPENAI_API_KEY=sk-...            # only if LLM_PROVIDER=openai
 OPENAI_MODEL=gpt-4o-mini         # only if LLM_PROVIDER=openai
 GROQ_API_KEY=gsk_...             # only if LLM_PROVIDER=groq
-GROQ_MODEL=llama-3.3-70b-versatile  # only if LLM_PROVIDER=groq
+GROQ_MODEL=openai/gpt-oss-20b  # only if LLM_PROVIDER=groq
 LANGUAGE_SWITCH_MODE=policy      # "policy" (stable) or "sarvam" (raw per-turn detection)
 LANGFUSE_PUBLIC_KEY=pk-lf-...    # optional: Langfuse observability
 LANGFUSE_SECRET_KEY=sk-lf-...    # optional: Langfuse observability
