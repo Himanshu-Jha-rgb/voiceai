@@ -776,6 +776,7 @@ async def entrypoint(ctx: JobContext) -> None:
     agent._publish_session_meta(preemptive_enabled=preemptive_enabled)
 
     session = AgentSession(
+        turn_detection="vad",
         turn_handling=TurnHandlingOptions(
             endpointing=EndpointingOptions(
                 mode=ENDPOINTING_MODE,

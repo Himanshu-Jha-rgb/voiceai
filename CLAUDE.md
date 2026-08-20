@@ -11,9 +11,11 @@ Browser ──WebRTC──▶ LiveKit Cloud (BVC noise cancellation)
                         │
                         ▼
               Silero VAD (framework default — speech presence, speech start/end,
-              barge-in trigger)
-              + inference.TurnDetector (framework default — audio semantic+
-                acoustic end-of-turn model, decides when the user finished)
+              barge-in trigger) + VAD-based turn detection (`turn_detection="vad"`,
+              silence-based end-of-turn; the heavyweight semantic
+              `inference.TurnDetector` audio model is NOT loaded — the Railway
+              trial plan caps memory at 1GB and the semantic model OOM-kills
+              the process at session start)
               + DynamicEndpointing (300–800ms EMA silence backstop)
                         │
                         ▼
@@ -185,7 +187,7 @@ Deduplicates final transcript events via MD5 text hashing + configurable time wi
 - Both values are logged at session start and recorded in the Langfuse `voice-session` root span metadata.
 
 ### Turn detection
-- **Semantic turn detection by framework default** — we never pass `turn_detection=`, so `AgentSession` uses `inference.TurnDetector()` (agent_session.py:365-366): an **audio** semantic+acoustic end-of-turn model (semantic branch = audio encoder → LLM backbone; acoustic branch = prosody/timing; fused EOU probability with per-language thresholds). Audio-based → no STT transcript dependency, inherently multilingual (works for all 11 languages; v1-mini ships tuned thresholds incl. `hi` 0.3050, others fall back to the en 0.36 default). The deprecated text-based `livekit-plugins-turn-detector` is *not* used.
+- **VAD-based turn detection** — `turn_detection="vad"` is passed explicitly, so `AgentSession` uses Silero VAD + the dynamic endpointing backstop for end-of-turn, *not* `inference.TurnDetector()` (audio semantic+acoustic EOT model: audio encoder → LLM backbone). The semantic model loads hundreds of MB at session start and OOM-kills the 1GB-capped Railway trial container (measured: 0.79 GB baseline → 0.93 GB at session start → SIGKILL -9). VAD-based detection keeps bilingual/multilingual behavior (VAD is language-agnostic) at a fraction of the memory.
 - Silero VAD is the framework default for speech presence — `AgentSession` auto-loads `inference.VAD(model="silero")` (agent_session.py:414-415); the code does not pass `vad=` explicitly
 - `EndpointingOptions(mode="dynamic", min_delay=0.3, max_delay=0.8)` — 300ms floor, 800ms cap (silence backstop; merged over the framework's tighter streaming defaults because a streaming turn detector is active, turn.py:298-311)
 - `alpha=0.7` — responsive EMA for fast adaptation to speaker cadence
@@ -298,7 +300,7 @@ LANGFUSE_TIMEOUT=10              # seconds
 - **Two-layer context** — Rolling summarization of older turns (async, background, length-capped) + sliding window of recent turns, with overflow buffering while the summarizer is busy. Maintains long conversation context without unbounded growth.
 - **Multi-provider LLM** — `LLM_PROVIDER` env var switches between Sarvam, OpenAI, and Groq without code changes. Groq uses OpenAI-compatible API. Rolling summaries use the same selected provider.
 - **Langfuse observability** — Full tracing: session → turn → STT/LLM spans + tool calls + language-switch events. TTFT tracked per LLM generation. Tracible overall latency via session span.
-- **TurnHandlingOptions API** — uses the new non-deprecated `turn_handling=TurnHandlingOptions(endpointing=EndpointingOptions(...), interruption=InterruptionOptions(...), preemptive_generation=PreemptiveGenerationOptions(...))` pattern; `turn_detection` is intentionally *not* passed so the framework default `inference.TurnDetector()` (audio semantic+acoustic EOT model) applies.
+- **TurnHandlingOptions API** — uses the new non-deprecated `turn_handling=TurnHandlingOptions(endpointing=EndpointingOptions(...), interruption=InterruptionOptions(...), preemptive_generation=PreemptiveGenerationOptions(...))` pattern with `turn_detection="vad"` (VAD-based EOU; the semantic `inference.TurnDetector()` is avoided because it OOM-kills the 1GB-capped Railway trial container).
 - **Silero VAD** — framework default VAD (`inference.VAD(model="silero")` auto-loaded by `AgentSession`); relies on LiveKit's recommended pattern without manual wiring.
 - **Conversational endpointing** — `min_delay=300ms`, `max_delay=800ms`, `alpha=0.7`, `mode="dynamic"` — tuned for fast Indian-language turn-taking while tolerating natural pauses.
 - **Preemptive TTS** — TTS starts as soon as LLM produces first tokens, reducing time-to-first-audio; language-instruction injection invalidates stale preemptive audio via the framework's equivalence gate.
