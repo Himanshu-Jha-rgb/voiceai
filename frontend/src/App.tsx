@@ -77,9 +77,9 @@ function AgentUI({
   return (
     <div className="flex flex-col items-center gap-6 w-full max-w-md mx-auto p-4">
       <div className="text-center">
-        <h1 className="text-xl font-bold tracking-tight">School Voice AI Agent</h1>
+        <h1 className="text-xl font-bold tracking-tight">AI Agent</h1>
         <p className="text-xs text-muted-foreground mt-1">
-          Multilingual assistant for Indian schools — powered by Sarvam AI
+          Multilingual voice assistant — powered by Sarvam AI
         </p>
       </div>
 
