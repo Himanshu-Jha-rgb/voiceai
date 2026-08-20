@@ -13,6 +13,7 @@ import {
   Zap,
   Cpu,
   Timer,
+  User,
 } from 'lucide-react';
 import type { SessionMeta, TurnMetrics } from '@/hooks/useAgentTelemetry';
 
@@ -189,6 +190,13 @@ function SessionBadges({ meta }: { meta: SessionMeta | null }) {
             : 'bg-muted text-muted-foreground border-border'
         }
       />
+      {meta.persona && (
+        <Badge
+          icon={User}
+          label={`Persona: ${meta.persona}`}
+          className="border-amber-500/40 bg-amber-500/10 text-amber-600"
+        />
+      )}
     </div>
   );
 }

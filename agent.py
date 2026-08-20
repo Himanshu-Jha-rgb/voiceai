@@ -26,6 +26,7 @@ from langfuse.types import TraceContext
 from config import (
     LANGUAGE_CODE_MAP,
     DEFAULT_LANGUAGE,
+    PERSONA_SPEAKERS,
     LANGUAGE_SWITCH_MODE,
     STT_MODEL,
     TTS_MODEL,
@@ -56,6 +57,7 @@ from config import (
     SLIDING_WINDOW_TURNS,
 )
 from utils.prompts import (
+    PERSONAS,
     SYSTEM_PROMPT,
     GREETING_INSTRUCTIONS,
     LANGUAGE_INSTRUCTION_TEMPLATE,
@@ -128,12 +130,17 @@ def _resolve_preemptive(raw: str | None) -> bool:
     return PREEMPTIVE_GENERATION
 
 
+def _resolve_persona(raw: str | None) -> str:
+    """Resolve the frontend persona attr; fall back to study_buddy."""
+    p = (raw or "").strip().lower()
+    return p if p in PERSONAS else "study_buddy"
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SchoolVoiceAgent
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _create_tts(language_code: str = "hi-IN") -> sarvam.TTS:
+def _create_tts(language_code: str = "hi-IN", speaker: str = "shubh") -> sarvam.TTS:
     """Create a single Sarvam TTS instance for all languages.
 
     Bulbul v3 is a unified multilingual model — update_options() switches the
@@ -144,7 +151,7 @@ def _create_tts(language_code: str = "hi-IN") -> sarvam.TTS:
     return sarvam.TTS(
         target_language_code=lang.code,
         model=TTS_MODEL,
-        speaker=lang.tts_speaker,
+        speaker=speaker,
         speech_sample_rate=TTS_SAMPLE_RATE,
         pace=TTS_PACE,
         temperature=TTS_TEMPERATURE,
@@ -156,10 +163,20 @@ def _create_tts(language_code: str = "hi-IN") -> sarvam.TTS:
 
 
 class SchoolVoiceAgent(Agent):
-    def __init__(self, llm_provider: str | None = None, llm_model: str | None = None) -> None:
+    def __init__(
+        self,
+        llm_provider: str | None = None,
+        llm_model: str | None = None,
+        persona: str | None = None,
+    ) -> None:
+        self._persona = _resolve_persona(persona)
+        persona_info = PERSONAS[self._persona]
+        self._greeting_instructions = persona_info["greeting"]
+        self._speaker = PERSONA_SPEAKERS.get(self._persona, "shubh")
+
         # Single TTS instance — Bulbul v3 is a unified model; language is
         # switched per-turn via update_options(), not via new instances.
-        self._tts = _create_tts("hi-IN")
+        self._tts = _create_tts("hi-IN", speaker=self._speaker)
         self._current_language: str = "hi-IN"
 
         self._rolling_summary: Optional[str] = None
@@ -198,10 +215,15 @@ class SchoolVoiceAgent(Agent):
         self._bg_tasks: set[asyncio.Task] = set()
 
         llm = create_llm(self._llm_provider, self._llm_model)
-        logger.info("Using %s LLM — model: %s", self._llm_provider.title(), self._llm_model)
+        logger.info(
+            "Using %s LLM — model: %s, persona: %s",
+            self._llm_provider.title(),
+            self._llm_model,
+            self._persona,
+        )
 
         super().__init__(
-            instructions=SYSTEM_PROMPT,
+            instructions=persona_info["prompt"],
             stt=create_stt(),
             llm=llm,
             tts=self._tts,
@@ -345,9 +367,9 @@ class SchoolVoiceAgent(Agent):
         return code if code in LANGUAGE_CODE_MAP else None
 
     async def on_enter(self) -> None:
-        logger.info("User entered — generating greeting")
+        logger.info("User entered — generating greeting for persona %r", self._persona)
         self._tts.prewarm()
-        self.session.generate_reply(instructions=GREETING_INSTRUCTIONS)
+        self.session.generate_reply(instructions=self._greeting_instructions)
 
     async def on_exit(self) -> None:
         """Clean up TTS and tracked background tasks."""
@@ -428,7 +450,7 @@ class SchoolVoiceAgent(Agent):
             lang = LANGUAGE_CODE_MAP.get(target_language, DEFAULT_LANGUAGE)
             self._tts.update_options(
                 target_language_code=lang.code,
-                speaker=lang.tts_speaker,
+                speaker=self._speaker,
             )
             self._current_language = target_language
             # Inject the current language instruction into the temp turn context
@@ -729,6 +751,7 @@ class SchoolVoiceAgent(Agent):
             "tts_model": TTS_MODEL,
             "language_switch_mode": self._lang_switch_mode,
             "preemptive_generation": preemptive_enabled,
+            "persona": self._persona,
         })
 
         async def _send() -> None:
@@ -776,14 +799,16 @@ async def entrypoint(ctx: JobContext) -> None:
     preemptive_enabled = _resolve_preemptive(session_attrs.get("preemptive"))
     llm_provider = resolve_provider(session_attrs.get("llm_provider"))
     llm_model = resolve_model(llm_provider, session_attrs.get("llm_model"))
+    persona = _resolve_persona(session_attrs.get("persona"))
     if session_attrs:
         logger.info(
             "Session settings from frontend: lang_mode=%s preemptive=%s "
-            "llm_provider=%s llm_model=%s",
+            "llm_provider=%s llm_model=%s persona=%s",
             lang_switch_mode,
             preemptive_enabled,
             llm_provider,
             llm_model,
+            persona,
         )
 
     session_trace_id = langfuse_client.create_trace_id()
@@ -799,10 +824,15 @@ async def entrypoint(ctx: JobContext) -> None:
             "tts_model": TTS_MODEL,
             "language_switch_mode": lang_switch_mode,
             "preemptive_generation": preemptive_enabled,
+            "persona": persona,
         }
     )
 
-    agent = SchoolVoiceAgent(llm_provider=llm_provider, llm_model=llm_model)
+    agent = SchoolVoiceAgent(
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        persona=persona,
+    )
     agent._session_trace_id = session_trace_id
     agent._root_span_id = root_span.id
     agent._active_turn_span_id = root_span.id

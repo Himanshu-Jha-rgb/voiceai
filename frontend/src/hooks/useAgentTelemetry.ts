@@ -27,6 +27,7 @@ export interface SessionMeta {
   tts_model: string;
   language_switch_mode: string;
   preemptive_generation: boolean;
+  persona?: string;
 }
 
 const MAX_TRACKED_TURNS = 50;
@@ -57,6 +58,7 @@ export function useAgentTelemetry() {
             tts_model: msg.tts_model,
             language_switch_mode: msg.language_switch_mode,
             preemptive_generation: !!msg.preemptive_generation,
+            persona: msg.persona,
           });
           return;
         }

@@ -11,6 +11,7 @@ import {
   SessionSettings,
   type LanguageSwitchMode,
   type LlmProvider,
+  type PersonaKey,
   PROVIDER_MODELS,
 } from '@/components/SessionSettings';
 import { useTranscripts } from '@/hooks/useTranscripts';
@@ -31,6 +32,8 @@ interface AgentUIProps {
   onLlmProviderChange: (provider: LlmProvider) => void;
   llmModel: string;
   onLlmModelChange: (model: string) => void;
+  persona: PersonaKey;
+  onPersonaChange: (persona: PersonaKey) => void;
 }
 
 function AgentUI({
@@ -43,6 +46,8 @@ function AgentUI({
   onLlmProviderChange,
   llmModel,
   onLlmModelChange,
+  persona,
+  onPersonaChange,
 }: AgentUIProps) {
   const { state: agentState } = useAgent();
   const { messages, detectedLanguage } = useTranscripts();
@@ -59,54 +64,55 @@ function AgentUI({
     session.connectionState === ConnectionState.Connecting;
 
   const handleConnect = async () => {
-    setIsConnecting(true);
     setError(null);
+    setIsConnecting(true);
     try {
       await session.start();
-    } catch (err: any) {
-      const msg = err?.message || String(err);
-      if (msg.includes('Failed to fetch') || msg.includes('fetch')) {
-        setError('Token server unreachable — run: uv run python server.py');
-      } else if (msg.includes('401') || msg.includes('403')) {
-        setError('Token server error — check your API keys in .env');
-      } else {
-        setError(`Connection failed: ${msg}`);
-      }
-      console.error('Connect error:', err);
+    } catch (err) {
+      console.error('Failed to start session:', err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to connect to agent server',
+      );
     } finally {
       setIsConnecting(false);
     }
   };
 
-  // AgentDisconnectButton already calls session.end(). Calling it here as
-  // well caused duplicate token refreshes and disconnect operations.
-  const handleDisconnect = () => {
-    setError(null);
+  const handleDisconnect = async () => {
+    try {
+      await session.end();
+    } catch (err) {
+      console.error('Failed to end session:', err);
+    }
   };
 
   return (
-    <div className="flex flex-col items-center gap-6 w-full max-w-md mx-auto p-4">
-      <div className="text-center">
-        <h1 className="text-xl font-bold tracking-tight">AI Agent</h1>
-        <p className="text-xs text-muted-foreground mt-1">
-          Multilingual voice assistant — powered by Sarvam AI
-        </p>
-      </div>
-
-      {error && (
-        <div className="flex items-center gap-2 w-full p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
-          <AlertCircle className="h-4 w-4 shrink-0" />
-          <code className="text-xs">{error}</code>
-        </div>
-      )}
-
+    <div className="min-h-screen flex flex-col items-center justify-center p-4 bg-background text-foreground space-y-6 max-w-lg mx-auto">
+      {/* ── Disconnected state: Setup & Connect Card ── */}
       {!isConnected ? (
-        /* ── Not connected: show settings + connect button ── */
-        <div className="flex flex-col items-center gap-4 mt-4 w-full">
+        <div className="w-full flex flex-col items-center space-y-6 text-center">
+          <div className="space-y-1">
+            <h1 className="text-2xl font-bold tracking-tight">
+              Voice AI Assistant
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Multilingual agent with real-time telemetry & language policy
+            </p>
+          </div>
+
+          {error && (
+            <div className="w-full p-3 rounded-lg border border-destructive/50 bg-destructive/10 text-destructive text-xs flex items-center gap-2 text-left">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+
           <AgentAudioVisualizerBar
-            state={agentState}
+            state="disconnected"
             size="lg"
-            className="text-primary opacity-40"
+            className="text-muted-foreground/40"
           />
           <SessionSettings
             langMode={langMode}
@@ -117,6 +123,8 @@ function AgentUI({
             onLlmProviderChange={onLlmProviderChange}
             llmModel={llmModel}
             onLlmModelChange={onLlmModelChange}
+            persona={persona}
+            onPersonaChange={onPersonaChange}
           />
           <AgentInsights
             sessionMeta={sessionMeta}
@@ -142,7 +150,7 @@ function AgentUI({
             )}
           </Button>
           <p className="text-xs text-muted-foreground">
-            Click to connect and start talking to Shubh
+            Click to connect and start talking to your selected AI persona
           </p>
         </div>
       ) : (
@@ -193,6 +201,8 @@ export default function App() {
   const [llmModel, setLlmModel] = useState<string>(
     PROVIDER_MODELS.groq[0],
   );
+  const [persona, setPersona] = useState<PersonaKey>('study_buddy');
+
   const sessionOptions = useMemo(
     () => ({
       participantAttributes: {
@@ -200,9 +210,10 @@ export default function App() {
         preemptive: preemptive ? '1' : '0',
         llm_provider: llmProvider,
         llm_model: llmModel,
+        persona: persona,
       },
     }),
-    [langMode, preemptive, llmProvider, llmModel],
+    [langMode, preemptive, llmProvider, llmModel, persona],
   );
   const session = useSession(tokenSource, sessionOptions);
 
@@ -223,6 +234,8 @@ export default function App() {
         onLlmProviderChange={handleProviderChange}
         llmModel={llmModel}
         onLlmModelChange={setLlmModel}
+        persona={persona}
+        onPersonaChange={setPersona}
       />
     </AgentSessionProvider>
   );

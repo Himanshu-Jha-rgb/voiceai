@@ -11,12 +11,21 @@ import {
 
 export type LanguageSwitchMode = 'policy' | 'sarvam';
 export type LlmProvider = 'sarvam' | 'openai' | 'groq';
+export type PersonaKey = 'study_buddy' | 'academic_mentor' | 'parent_helpdesk' | 'quiz_master' | 'primary_tutor';
 
 export const PROVIDER_MODELS: Record<LlmProvider, string[]> = {
   sarvam: ['sarvam-105b-conversations'],
   openai: ['gpt-4o-mini', 'gpt-4o'],
   groq: ['qwen/qwen3.6-27b', 'openai/gpt-oss-20b'],
 };
+
+export const PERSONA_OPTIONS: { key: PersonaKey; label: string; speaker: string; desc: string }[] = [
+  { key: 'study_buddy', label: 'Shubh (Study Buddy)', speaker: 'shubh (Male, friendly)', desc: 'Classmate & peer companion' },
+  { key: 'academic_mentor', label: 'Vidya Ma\'am (Academic Mentor)', speaker: 'meera (Female, articulate)', desc: 'Science & math mentor' },
+  { key: 'parent_helpdesk', label: 'Anand (Parent Helpdesk)', speaker: 'anand (Male, professional)', desc: 'School admin & parent info' },
+  { key: 'quiz_master', label: 'Aditya (Quiz Master)', speaker: 'aditya (Male, upbeat)', desc: 'Oral trivia & revision drills' },
+  { key: 'primary_tutor', label: 'Maya (Primary Tutor)', speaker: 'pari (Female, soft)', desc: 'Early learning & story guide' },
+];
 
 interface SessionSettingsProps {
   langMode: LanguageSwitchMode;
@@ -27,6 +36,8 @@ interface SessionSettingsProps {
   onLlmProviderChange: (provider: LlmProvider) => void;
   llmModel: string;
   onLlmModelChange: (model: string) => void;
+  persona: PersonaKey;
+  onPersonaChange: (persona: PersonaKey) => void;
   className?: string;
 }
 
@@ -39,6 +50,8 @@ export function SessionSettings({
   onLlmProviderChange,
   llmModel,
   onLlmModelChange,
+  persona,
+  onPersonaChange,
   className,
 }: SessionSettingsProps) {
   return (
@@ -51,6 +64,34 @@ export function SessionSettings({
       <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         Session settings
       </p>
+
+      {/* Persona & Speaker Selector */}
+      <div className="space-y-2">
+        <p className="text-sm font-medium">Agent persona & speaker voice</p>
+        <p className="text-xs text-muted-foreground">
+          System prompt & Sarvam TTS speaker profile
+        </p>
+        <Select
+          value={persona}
+          onValueChange={(v) => onPersonaChange(v as PersonaKey)}
+        >
+          <SelectTrigger size="sm" className="w-full">
+            <SelectValue>{PERSONA_OPTIONS.find((p) => p.key === persona)?.label}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {PERSONA_OPTIONS.map((p) => (
+              <SelectItem key={p.key} value={p.key}>
+                <div className="flex flex-col text-left py-0.5">
+                  <span className="font-medium text-xs">{p.label}</span>
+                  <span className="text-[10px] text-muted-foreground">{p.desc} · voice: {p.speaker}</span>
+                </div>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <Separator />
 
       <div className="space-y-2">
         <p className="text-sm font-medium">LLM provider</p>

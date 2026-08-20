@@ -29,6 +29,16 @@ LANGUAGE_CODE_MAP: dict[str, LanguageConfig] = {
 }
 DEFAULT_LANGUAGE = LANGUAGE_CODE_MAP["hi-IN"]
 
+# Sarvam TTS Speaker map per persona
+PERSONA_SPEAKERS: dict[str, str] = {
+    "study_buddy": "shubh",
+    "academic_mentor": "meera",
+    "parent_helpdesk": "anand",
+    "quiz_master": "aditya",
+    "primary_tutor": "pari",
+}
+
+
 # STT
 STT_MODEL = "saaras:v3"
 STT_MODE = "transcribe"
