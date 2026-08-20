@@ -14,17 +14,17 @@ export type LlmProvider = 'sarvam' | 'openai' | 'groq';
 export type PersonaKey = 'study_buddy' | 'academic_mentor' | 'parent_helpdesk' | 'quiz_master' | 'primary_tutor';
 
 export const PROVIDER_MODELS: Record<LlmProvider, string[]> = {
-  sarvam: ['sarvam-105b-conversations'],
+  sarvam: ['sarvam-105b', 'sarvam-105b-conversations'],
   openai: ['gpt-4o-mini', 'gpt-4o'],
   groq: ['openai/gpt-oss-20b'],
 };
 
 export const PERSONA_OPTIONS: { key: PersonaKey; label: string; speaker: string; desc: string }[] = [
   { key: 'study_buddy', label: 'Shubh (Study Buddy)', speaker: 'shubh (Male, friendly)', desc: 'Classmate & peer companion' },
-  { key: 'academic_mentor', label: 'Vidya Ma\'am (Academic Mentor)', speaker: 'meera (Female, articulate)', desc: 'Science & math mentor' },
-  { key: 'parent_helpdesk', label: 'Anand (Parent Helpdesk)', speaker: 'anand (Male, professional)', desc: 'School admin & parent info' },
+  { key: 'academic_mentor', label: 'Vidya Ma\'am (Academic Mentor)', speaker: 'kavya (Female, articulate)', desc: 'Science & math mentor' },
+  { key: 'parent_helpdesk', label: 'Anand (Parent Helpdesk)', speaker: 'dev (Male, professional)', desc: 'School admin & parent info' },
   { key: 'quiz_master', label: 'Aditya (Quiz Master)', speaker: 'aditya (Male, upbeat)', desc: 'Oral trivia & revision drills' },
-  { key: 'primary_tutor', label: 'Maya (Primary Tutor)', speaker: 'pari (Female, soft)', desc: 'Early learning & story guide' },
+  { key: 'primary_tutor', label: 'Maya (Primary Tutor)', speaker: 'suhani (Female, soft)', desc: 'Early learning & story guide' },
 ];
 
 interface SessionSettingsProps {

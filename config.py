@@ -29,13 +29,13 @@ LANGUAGE_CODE_MAP: dict[str, LanguageConfig] = {
 }
 DEFAULT_LANGUAGE = LANGUAGE_CODE_MAP["hi-IN"]
 
-# Sarvam TTS Speaker map per persona
+# Sarvam TTS Speaker map per persona (Bulbul v3 compatible speakers)
 PERSONA_SPEAKERS: dict[str, str] = {
     "study_buddy": "shubh",
-    "academic_mentor": "meera",
-    "parent_helpdesk": "anand",
+    "academic_mentor": "kavya",
+    "parent_helpdesk": "dev",
     "quiz_master": "aditya",
-    "primary_tutor": "pari",
+    "primary_tutor": "suhani",
 }
 
 
@@ -66,7 +66,7 @@ TTS_MAX_CHUNK_LENGTH = 150
 TTS_WS_MAX_RETRIES = 2  # stale WebSocket recovery attempts
 
 # LLM
-LLM_MODEL = os.getenv("SARVAM_LLM_MODEL", "sarvam-105b-conversations")  # Sarvam model name (only used when provider is "sarvam")
+LLM_MODEL = os.getenv("SARVAM_LLM_MODEL", "sarvam-105b")  # Sarvam model name (only used when provider is "sarvam")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "sarvam")  # "sarvam", "openai", or "groq"
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # OpenAI model
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
@@ -75,7 +75,7 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL)  # Groq model
 # Model catalogs exposed to the frontend selector (provider -> models).
 # Frontend selection overrides the env defaults for the session.
 PROVIDER_MODELS: dict[str, list[str]] = {
-    "sarvam": ["sarvam-105b-conversations"],
+    "sarvam": ["sarvam-105b", "sarvam-105b-conversations"],
     "openai": ["gpt-4o-mini", "gpt-4o"],
     "groq": ["openai/gpt-oss-20b"],
 }
