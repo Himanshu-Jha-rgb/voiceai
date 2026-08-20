@@ -15,7 +15,7 @@ export type LlmProvider = 'sarvam' | 'openai' | 'groq';
 export const PROVIDER_MODELS: Record<LlmProvider, string[]> = {
   sarvam: ['sarvam-105b-conversations'],
   openai: ['gpt-4o-mini', 'gpt-4o'],
-  groq: ['qwen/qwen3.6-27b', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b'],
+  groq: ['qwen/qwen3.6-27b', 'openai/gpt-oss-20b'],
 };
 
 interface SessionSettingsProps {

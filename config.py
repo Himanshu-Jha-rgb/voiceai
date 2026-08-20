@@ -67,7 +67,7 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL)  # Groq model
 PROVIDER_MODELS: dict[str, list[str]] = {
     "sarvam": ["sarvam-105b-conversations"],
     "openai": ["gpt-4o-mini", "gpt-4o"],
-    "groq": ["qwen/qwen3.6-27b", "llama-3.3-70b-versatile", "openai/gpt-oss-20b"],
+    "groq": ["qwen/qwen3.6-27b", "openai/gpt-oss-20b"],
 }
 
 # ── Turn detection (aggressive conversational tuning) ─────────────────────────

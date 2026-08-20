@@ -217,7 +217,7 @@ When `MAX_CONTEXT_ITEMS` (50) is exceeded:
 - `LLM_PROVIDER` env var selects: `"sarvam"` (default), `"openai"`, or `"groq"`
 - Sarvam: OpenAI-compatible `openai.LLM` at `https://api.sarvam.ai/v1` with `sarvam-105b-conversations` (livekit-sarvam plugin's hardcoded model whitelist rejects it)
 - OpenAI: `livekit.plugins.openai.LLM(model="gpt-4o-mini")`
-- Groq: OpenAI-compatible endpoint at `api.groq.com/openai/v1` with `qwen/qwen3.6-27b` (default), `llama-3.3-70b-versatile` or `openai/gpt-oss-20b`
+- Groq: OpenAI-compatible endpoint at `api.groq.com/openai/v1` with `qwen/qwen3.6-27b` (default) or `openai/gpt-oss-20b`
 - `PROVIDER_MODELS` catalog in `config.py` drives the frontend dropdown; `resolve_provider`/`resolve_model` in `providers.py` fail-soft back to env defaults for anything unknown
 - Provider config is validated at startup (fail-fast on missing key), with bounded SDK retries (`max_retries=2`)
 - Rolling summaries use the session-selected provider + model (`summarize_conversation(provider, llm_model=…)`)
