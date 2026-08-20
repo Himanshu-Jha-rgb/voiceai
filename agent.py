@@ -875,7 +875,7 @@ async def entrypoint(ctx: JobContext) -> None:
         if item and getattr(item, "role", None) == "assistant":
             text_parts = []
             for c in getattr(item, "content", []) or []:
-                t = getattr(c, "text", None)
+                t = c if isinstance(c, str) else getattr(c, "text", None)
                 if t:
                     text_parts.append(str(t))
             text = " ".join(text_parts)
