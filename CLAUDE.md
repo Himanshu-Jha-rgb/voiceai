@@ -32,7 +32,8 @@ Browser ──WebRTC──▶ LiveKit Cloud (BVC noise cancellation)
                 immediately; 2 short turns confirm
                         │
                         ▼
-              LLM (Sarvam / OpenAI / Groq — configurable via LLM_PROVIDER)
+              LLM (Sarvam / OpenAI / Groq — per-session via frontend,
+              env fallback)
               + Langfuse tracing (per-turn spans, LLM generation, STT)
               + language instruction injected into turn context per confirmed
                 language (forces fresh generation via equivalence gate)
@@ -212,11 +213,14 @@ When `MAX_CONTEXT_ITEMS` (50) is exceeded:
 5. Background tasks are tracked for lifecycle cleanup (`track_bg` + cancel/drain in `on_exit`)
 
 ### LLM provider flexibility
+- **Per-session selection** — the frontend `SessionSettings` panel sends `llm_provider` + `llm_model` via participant attributes (server.py schema normalize → JWT → `_read_session_attributes` → `SchoolVoiceAgent(llm_provider=…, llm_model=…)`). Env vars are the fallback default for each provider.
 - `LLM_PROVIDER` env var selects: `"sarvam"` (default), `"openai"`, or `"groq"`
 - Sarvam: OpenAI-compatible `openai.LLM` at `https://api.sarvam.ai/v1` with `sarvam-105b-conversations` (livekit-sarvam plugin's hardcoded model whitelist rejects it)
 - OpenAI: `livekit.plugins.openai.LLM(model="gpt-4o-mini")`
-- Groq: OpenAI-compatible endpoint at `api.groq.com/openai/v1` with `openai/gpt-oss-20b`
+- Groq: OpenAI-compatible endpoint at `api.groq.com/openai/v1` with `qwen/qwen3.6-27b` (default), `llama-3.3-70b-versatile` or `openai/gpt-oss-20b`
+- `PROVIDER_MODELS` catalog in `config.py` drives the frontend dropdown; `resolve_provider`/`resolve_model` in `providers.py` fail-soft back to env defaults for anything unknown
 - Provider config is validated at startup (fail-fast on missing key), with bounded SDK retries (`max_retries=2`)
+- Rolling summaries use the session-selected provider + model (`summarize_conversation(provider, llm_model=…)`)
 
 ### Langfuse observability
 - Per-session trace with root span (`voice-session`)
@@ -277,11 +281,11 @@ LIVEKIT_URL=wss://your-project.livekit.cloud
 LIVEKIT_API_KEY=APIxxxxxxxxxxxxx
 LIVEKIT_API_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 SARVAM_API_KEY=sk_xxxxxxxxxxxxxxxxxxxxxxxx
-LLM_PROVIDER=sarvam              # "sarvam", "openai", or "groq"
+LLM_PROVIDER=sarvam              # "sarvam", "openai", or "groq" — session override via frontend
 OPENAI_API_KEY=sk-...            # only if LLM_PROVIDER=openai
 OPENAI_MODEL=gpt-4o-mini         # only if LLM_PROVIDER=openai
 GROQ_API_KEY=gsk_...             # only if LLM_PROVIDER=groq
-GROQ_MODEL=openai/gpt-oss-20b  # only if LLM_PROVIDER=groq
+GROQ_MODEL=qwen/qwen3.6-27b      # only if LLM_PROVIDER=groq
 LANGUAGE_SWITCH_MODE=policy      # "policy" (stable) or "sarvam" (raw per-turn detection)
 LANGFUSE_PUBLIC_KEY=pk-lf-...    # optional: Langfuse observability
 LANGFUSE_SECRET_KEY=sk-lf-...    # optional: Langfuse observability
@@ -298,7 +302,7 @@ LANGFUSE_TIMEOUT=10              # seconds
 - **No filler suppression** — the LLM sees every utterance; `FILLER_PATTERNS` is a vestigial constant never referenced by runtime code.
 - **Transcript deduplication** — `TranscriptDedup` uses MD5 hashing + time window to prevent repeated STT finals from triggering duplicate LLM/TTS cycles.
 - **Two-layer context** — Rolling summarization of older turns (async, background, length-capped) + sliding window of recent turns, with overflow buffering while the summarizer is busy. Maintains long conversation context without unbounded growth.
-- **Multi-provider LLM** — `LLM_PROVIDER` env var switches between Sarvam, OpenAI, and Groq without code changes. Groq uses OpenAI-compatible API. Rolling summaries use the same selected provider.
+- **Multi-provider LLM** — `LLM_PROVIDER` env var switches between Sarvam, OpenAI, and Groq without code changes; the frontend can also select provider + model per session. Groq uses OpenAI-compatible API. Rolling summaries use the same selected provider.
 - **Langfuse observability** — Full tracing: session → turn → STT/LLM spans + tool calls + language-switch events. TTFT tracked per LLM generation. Tracible overall latency via session span.
 - **TurnHandlingOptions API** — uses the new non-deprecated `turn_handling=TurnHandlingOptions(endpointing=EndpointingOptions(...), interruption=InterruptionOptions(...), preemptive_generation=PreemptiveGenerationOptions(...))` pattern with `turn_detection="vad"` (VAD-based EOU; the semantic `inference.TurnDetector()` is avoided because it OOM-kills the 1GB-capped Railway trial container).
 - **Silero VAD** — explicit `vad=silero.VAD.load()`; pinned to livekit-agents 1.6.0 to stay on the silero-plugin VAD and avoid the 1.6.2+ memory regression (1.6.0: ~700MB baseline, 1.6.4: >1GB per LiveKit community reports; local import footprint ~165MB).
