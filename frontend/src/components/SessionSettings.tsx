@@ -62,7 +62,7 @@ export function SessionSettings({
             value={llmProvider}
             onValueChange={(v) => onLlmProviderChange(v as LlmProvider)}
           >
-            <SelectTrigger size="sm" className="w-28">
+            <SelectTrigger size="sm" className="w-32">
               <SelectValue>{llmProvider}</SelectValue>
             </SelectTrigger>
             <SelectContent>
