@@ -172,6 +172,13 @@ class SchoolVoiceAgent(Agent):
         self._active_turn_span_id: str | None = None
         self._stt_span: Any | None = None
 
+        # Room handle for publishing live telemetry to the frontend (set in
+        # the entrypoint once the agent joins the room).
+        self._room: Any = None
+        # Most recent LLM generation metrics — published per-turn so the
+        # frontend can show TTFT / token counts / latency live.
+        self._last_llm_metrics: dict[str, Any] | None = None
+
         # Per-turn state (was module-level — moved here for concurrent session safety)
         self._detected_language: Optional[str] = None
         self._detected_transcript: str = ""
@@ -451,6 +458,17 @@ class SchoolVoiceAgent(Agent):
             "language_pending_count": pending_count,
         })
 
+        # Publish live per-turn telemetry to the frontend insights panel —
+        # makes the language policy + LLM latency observable during demos.
+        self._publish_turn_metrics(
+            detected_language=self._detected_language,
+            final_tts_language=target_language,
+            reason=decision_reason,
+            pending_count=pending_count,
+            switched=switched,
+            previous_language=previous_language,
+        )
+
         # ── Step 4: Reset per-turn state ──────────────────────────────────
         self._detected_language = None
         self._detected_transcript = ""
@@ -611,6 +629,7 @@ class SchoolVoiceAgent(Agent):
                 if first_content:
                     first_content = False
                     ttft = (now - start) * 1000
+                    self._last_ttft_ms = ttft
                     if generation:
                         generation.update(metadata={"ttft_ms": ttft})
                     logger.info(
@@ -622,6 +641,12 @@ class SchoolVoiceAgent(Agent):
             yield chunk
 
         elapsed = (time.perf_counter() - start) * 1000
+        self._last_llm_metrics = {
+            "ttft_ms": round(getattr(self, "_last_ttft_ms", 0) or 0),
+            "elapsed_ms": round(elapsed),
+            "token_count": chunk_count,
+            "char_count": char_count,
+        }
         if generation:
             generation.update(
                 output=full_response_text,
@@ -636,6 +661,62 @@ class SchoolVoiceAgent(Agent):
             f"LLM stream complete: chunks={chunk_count} "
             f"chars={char_count} elapsed_ms={round(elapsed)}"
         )
+
+    def _publish_turn_metrics(
+        self,
+        *,
+        detected_language: str | None,
+        final_tts_language: str,
+        reason: str,
+        pending_count: int,
+        switched: bool,
+        previous_language: str,
+    ) -> None:
+        """Publish per-turn engineering telemetry to the frontend insights
+        panel via the LiveKit data channel (type: "turn_metrics")."""
+        if self._room is None:
+            return
+        try:
+            self.track_bg(
+                self._room.local_participant.publish_data(
+                    payload=json.dumps({
+                        "type": "turn_metrics",
+                        "detected_language": detected_language,
+                        "final_tts_language": final_tts_language,
+                        "reason": reason,
+                        "pending_count": pending_count,
+                        "switched": switched,
+                        "previous_language": previous_language if switched else None,
+                        "mode": self._lang_switch_mode,
+                        "llm": self._last_llm_metrics,
+                    }),
+                    reliable=True,
+                )
+            )
+        except Exception as e:
+            logger.debug(f"Failed to publish turn metrics: {e}")
+
+    def _publish_session_meta(self, *, preemptive_enabled: bool) -> None:
+        """Publish a one-time session metadata message (type: "session_meta")
+        so the frontend can show models + settings badges."""
+        if self._room is None:
+            return
+        try:
+            self.track_bg(
+                self._room.local_participant.publish_data(
+                    payload=json.dumps({
+                        "type": "session_meta",
+                        "llm_model": active_model(),
+                        "stt_model": STT_MODEL,
+                        "tts_model": TTS_MODEL,
+                        "language_switch_mode": self._lang_switch_mode,
+                        "preemptive_generation": preemptive_enabled,
+                    }),
+                    reliable=True,
+                )
+            )
+        except Exception as e:
+            logger.debug(f"Failed to publish session meta: {e}")
 
     async def _generate_rolling_summary(self, old_items: list) -> None:
         try:
@@ -690,7 +771,9 @@ async def entrypoint(ctx: JobContext) -> None:
     agent._root_span_id = root_span.id
     agent._active_turn_span_id = root_span.id
     agent._lang_switch_mode = lang_switch_mode
+    agent._room = ctx.room
     active_turn_span_var.set({"trace_id": session_trace_id, "span_id": root_span.id})
+    agent._publish_session_meta(preemptive_enabled=preemptive_enabled)
 
     session = AgentSession(
         turn_handling=TurnHandlingOptions(

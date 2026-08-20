@@ -12,6 +12,8 @@ import {
   type LanguageSwitchMode,
 } from '@/components/SessionSettings';
 import { useTranscripts } from '@/hooks/useTranscripts';
+import { useAgentTelemetry } from '@/hooks/useAgentTelemetry';
+import { AgentInsights } from '@/components/AgentInsights';
 import { Button } from '@/components/ui/button';
 import { Phone, Loader2, AlertCircle } from 'lucide-react';
 
@@ -34,6 +36,7 @@ function AgentUI({
 }: AgentUIProps) {
   const { state: agentState } = useAgent();
   const { messages, detectedLanguage } = useTranscripts();
+  const { sessionMeta, turns } = useAgentTelemetry();
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -101,6 +104,11 @@ onLangModeChange={onLangModeChange}
             preemptive={preemptive}
 onPreemptiveChange={onPreemptiveChange}
           />
+          <AgentInsights
+            sessionMeta={sessionMeta}
+            turns={turns}
+            collapsed
+          />
           <Button
             size="lg"
             onClick={handleConnect}
@@ -139,6 +147,8 @@ onPreemptiveChange={onPreemptiveChange}
             messages={messages}
             className="w-full h-[300px]"
           />
+
+          <AgentInsights sessionMeta={sessionMeta} turns={turns} />
 
           <AgentControlBar
             variant="livekit"
