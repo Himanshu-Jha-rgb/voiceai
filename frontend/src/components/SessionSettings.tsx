@@ -16,7 +16,7 @@ export type PersonaKey = 'study_buddy' | 'academic_mentor' | 'parent_helpdesk' |
 export const PROVIDER_MODELS: Record<LlmProvider, string[]> = {
   sarvam: ['sarvam-105b-conversations'],
   openai: ['gpt-4o-mini', 'gpt-4o'],
-  groq: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
+  groq: ['openai/gpt-oss-20b'],
 };
 
 export const PERSONA_OPTIONS: { key: PersonaKey; label: string; speaker: string; desc: string }[] = [
