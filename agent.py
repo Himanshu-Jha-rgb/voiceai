@@ -676,47 +676,64 @@ class SchoolVoiceAgent(Agent):
         panel via the LiveKit data channel (type: "turn_metrics")."""
         if self._room is None:
             return
-        try:
-            self.track_bg(
-                self._room.local_participant.publish_data(
-                    payload=json.dumps({
-                        "type": "turn_metrics",
-                        "detected_language": detected_language,
-                        "final_tts_language": final_tts_language,
-                        "reason": reason,
-                        "pending_count": pending_count,
-                        "switched": switched,
-                        "previous_language": previous_language if switched else None,
-                        "mode": self._lang_switch_mode,
-                        "llm": self._last_llm_metrics,
-                    }),
-                    reliable=True,
+        payload = json.dumps({
+            "type": "turn_metrics",
+            "detected_language": detected_language,
+            "final_tts_language": final_tts_language,
+            "reason": reason,
+            "pending_count": pending_count,
+            "switched": switched,
+            "previous_language": previous_language if switched else None,
+            "mode": self._lang_switch_mode,
+            "llm": self._last_llm_metrics,
+        })
+
+        async def _send() -> None:
+            # publish_data waits on the FFI queue with no timeout — wrapping
+            # the await means a hang (not just an error) shows up in logs.
+            try:
+                await self._room.local_participant.publish_data(
+                    payload=payload, reliable=True
                 )
-            )
+                logger.info(
+                    f"Published turn_metrics ({len(payload)} B): "
+                    f"reason={reason} switched={switched}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to publish turn metrics: {e}")
+
+        try:
+            self.track_bg(_send())
         except Exception as e:
-            logger.debug(f"Failed to publish turn metrics: {e}")
+            logger.error(f"Failed to schedule turn metrics publish: {e}")
 
     def _publish_session_meta(self, *, preemptive_enabled: bool) -> None:
         """Publish a one-time session metadata message (type: "session_meta")
         so the frontend can show models + settings badges."""
         if self._room is None:
             return
-        try:
-            self.track_bg(
-                self._room.local_participant.publish_data(
-                    payload=json.dumps({
-                        "type": "session_meta",
-                        "llm_model": active_model(),
-                        "stt_model": STT_MODEL,
-                        "tts_model": TTS_MODEL,
-                        "language_switch_mode": self._lang_switch_mode,
-                        "preemptive_generation": preemptive_enabled,
-                    }),
-                    reliable=True,
+        payload = json.dumps({
+            "type": "session_meta",
+            "llm_model": active_model(),
+            "stt_model": STT_MODEL,
+            "tts_model": TTS_MODEL,
+            "language_switch_mode": self._lang_switch_mode,
+            "preemptive_generation": preemptive_enabled,
+        })
+
+        async def _send() -> None:
+            try:
+                await self._room.local_participant.publish_data(
+                    payload=payload, reliable=True
                 )
-            )
+                logger.info(f"Published session_meta ({len(payload)} B)")
+            except Exception as e:
+                logger.error(f"Failed to publish session meta: {e}")
+
+        try:
+            self.track_bg(_send())
         except Exception as e:
-            logger.debug(f"Failed to publish session meta: {e}")
+            logger.error(f"Failed to schedule session meta publish: {e}")
 
     async def _generate_rolling_summary(self, old_items: list) -> None:
         try:
