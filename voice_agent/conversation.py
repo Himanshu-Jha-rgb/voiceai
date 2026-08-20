@@ -52,7 +52,11 @@ LANGUAGE_KEYWORDS: dict[str, str] = {
 }
 
 _VERBS = r"(?:speak|talk|reply|respond|answer)"
-_LANG_ALT = "|".join(re.escape(keyword) for keyword in LANGUAGE_KEYWORDS)
+_LANG_ALT = "|".join(
+    re.escape(keyword)
+    for keyword in sorted(LANGUAGE_KEYWORDS.keys(), key=len, reverse=True)
+)
+
 
 _language_patterns = (
     # verb first, latin: "speak in english", "talk to english"

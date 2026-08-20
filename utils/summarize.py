@@ -119,6 +119,7 @@ async def _summarize_openai_compatible(
             else os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         )
     response = await client.chat.completions.create(
+        model=model,
         messages=[
             {"role": "system", "content": _SUMMARIZATION_PROMPT},
             {"role": "user", "content": text},

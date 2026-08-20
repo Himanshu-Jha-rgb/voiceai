@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from livekit.agents import JobContext, WorkerOptions, cli
-from livekit.agents.llm import ChatContext, ChatMessage
+from livekit.agents.llm import LLM, ChatContext, ChatMessage
 from livekit.agents.voice import Agent, AgentSession
 from livekit.agents.voice.turn import (
     TurnHandlingOptions,
@@ -76,12 +76,12 @@ from voice_agent.conversation import (
     has_language_signal,
 )
 from voice_agent.providers import (
-    active_model,
     create_llm,
     create_stt,
     resolve_model,
     resolve_provider,
 )
+
 from voice_agent.telemetry import create_langfuse_client
 
 langfuse_client = create_langfuse_client()
@@ -244,6 +244,7 @@ class SchoolVoiceAgent(Agent):
             if not (
                 isinstance(item, ChatMessage)
                 and item.role == "system"
+                and isinstance(item.extra, dict)
                 and item.extra.get("is_language_instruction")
             )
         ]
@@ -272,6 +273,7 @@ class SchoolVoiceAgent(Agent):
             if not (
                 isinstance(item, ChatMessage)
                 and item.role == "system"
+                and isinstance(item.extra, dict)
                 and item.extra.get("is_language_instruction")
             )
         ]
@@ -279,7 +281,7 @@ class SchoolVoiceAgent(Agent):
             (
                 i
                 for i in range(len(items) - 1, -1, -1)
-                if isinstance(items[i], ChatMessage) and items[i].role == "user"
+                if isinstance(items[i], ChatMessage) and getattr(items[i], "role", None) == "user"
             ),
             -1,
         )
@@ -320,7 +322,7 @@ class SchoolVoiceAgent(Agent):
 
     async def _llm_detect_requested_language(self, transcript: str) -> str | None:
         llm = self.llm
-        if llm is None:
+        if not isinstance(llm, LLM):
             return None
         prompt = (
             "You decide whether the user asked the assistant to speak in a specific "
@@ -527,9 +529,11 @@ class SchoolVoiceAgent(Agent):
 
     # ── Resilient STT node — auto-reconnect on Sarvam WS drop ────────────────
 
+    # ── Resilient STT node — auto-reconnect on Sarvam WS drop ────────────────
+
     async def stt_node(
-        self, audio: AsyncGenerator, model_settings
-    ) -> AsyncGenerator:
+        self, audio: Any, model_settings: Any
+    ) -> AsyncGenerator[Any, None]:
         """Override to retry the STT stream when Sarvam drops the WebSocket.
 
         Sarvam's STT WS is occasionally dropped mid-session (ConnectionError
@@ -615,56 +619,57 @@ class SchoolVoiceAgent(Agent):
         if isinstance(chat_ctx, ChatContext):
             chat_ctx = self._prepare_llm_context(chat_ctx)
 
-        async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
-            chunk_count += 1
-            now = time.perf_counter()
+        try:
+            async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
+                chunk_count += 1
+                now = time.perf_counter()
 
-            # Extract text from the chunk (str or ChatChunk with delta)
-            text = None
-            if isinstance(chunk, str):
-                text = chunk
-            elif hasattr(chunk, "delta"):
-                delta = getattr(chunk, "delta", None)
-                text = getattr(delta, "content", None)
+                # Extract text from the chunk (str or ChatChunk with delta)
+                text = None
+                if isinstance(chunk, str):
+                    text = chunk
+                elif hasattr(chunk, "delta"):
+                    delta = getattr(chunk, "delta", None)
+                    text = getattr(delta, "content", None)
 
-            if text:
-                char_count += len(text)
-                full_response_text += text
-                if first_content:
-                    first_content = False
-                    ttft = (now - start) * 1000
-                    self._last_ttft_ms = ttft
-                    if generation:
-                        generation.update(metadata={"ttft_ms": ttft})
-                    logger.info(
-                        f"LLM_FIRST_TOKEN: {text[:40]!r} "
-                        f"llm_ttft_ms={round(ttft)} "
-                        f"chunk={chunk_count}"
-                    )
+                if text:
+                    char_count += len(text)
+                    full_response_text += text
+                    if first_content:
+                        first_content = False
+                        ttft = (now - start) * 1000
+                        self._last_ttft_ms = ttft
+                        if generation:
+                            generation.update(metadata={"ttft_ms": ttft})
+                        logger.info(
+                            f"LLM_FIRST_TOKEN: {text[:40]!r} "
+                            f"llm_ttft_ms={round(ttft)} "
+                            f"chunk={chunk_count}"
+                        )
 
-            yield chunk
-
-        elapsed = (time.perf_counter() - start) * 1000
-        self._last_llm_metrics = {
-            "ttft_ms": round(getattr(self, "_last_ttft_ms", 0) or 0),
-            "elapsed_ms": round(elapsed),
-            "token_count": chunk_count,
-            "char_count": char_count,
-        }
-        if generation:
-            generation.update(
-                output=full_response_text,
-                metadata={
-                    "token_count": chunk_count,
-                    "char_count": char_count,
-                    "elapsed_ms": elapsed,
-                }
+                yield chunk
+        finally:
+            elapsed = (time.perf_counter() - start) * 1000
+            self._last_llm_metrics = {
+                "ttft_ms": round(getattr(self, "_last_ttft_ms", 0) or 0),
+                "elapsed_ms": round(elapsed),
+                "token_count": chunk_count,
+                "char_count": char_count,
+            }
+            if generation:
+                generation.update(
+                    output=full_response_text,
+                    metadata={
+                        "token_count": chunk_count,
+                        "char_count": char_count,
+                        "elapsed_ms": elapsed,
+                    }
+                )
+                generation.end()
+            logger.info(
+                f"LLM stream complete: chunks={chunk_count} "
+                f"chars={char_count} elapsed_ms={round(elapsed)}"
             )
-            generation.end()
-        logger.info(
-            f"LLM stream complete: chunks={chunk_count} "
-            f"chars={char_count} elapsed_ms={round(elapsed)}"
-        )
 
     def _publish_turn_metrics(
         self,

@@ -80,7 +80,7 @@ function reasonMeta(reason: string): ReasonMeta {
       return {
         label: 'Pending',
         className: 'bg-amber-500/15 text-amber-600 border-amber-500/40',
-        desc: `Short turn — needs 1 more (${'keep'})`,
+        desc: 'Short turn — needs 1 more turn to confirm switch',
       };
     case 'matches_confirmed':
       return {
