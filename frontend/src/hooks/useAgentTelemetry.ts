@@ -21,6 +21,7 @@ export interface TurnMetrics {
 }
 
 export interface SessionMeta {
+  llm_provider?: string;
   llm_model: string;
   stt_model: string;
   tts_model: string;
@@ -50,6 +51,7 @@ export function useAgentTelemetry() {
 
         if (msg.type === 'session_meta') {
           setSessionMeta({
+            llm_provider: msg.llm_provider,
             llm_model: msg.llm_model,
             stt_model: msg.stt_model,
             tts_model: msg.tts_model,

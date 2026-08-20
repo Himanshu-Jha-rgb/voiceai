@@ -10,6 +10,8 @@ import { LanguageBar } from '@/components/LanguageBar';
 import {
   SessionSettings,
   type LanguageSwitchMode,
+  type LlmProvider,
+  PROVIDER_MODELS,
 } from '@/components/SessionSettings';
 import { useTranscripts } from '@/hooks/useTranscripts';
 import { useAgentTelemetry } from '@/hooks/useAgentTelemetry';
@@ -25,6 +27,10 @@ interface AgentUIProps {
   onLangModeChange: (mode: LanguageSwitchMode) => void;
   preemptive: boolean;
   onPreemptiveChange: (enabled: boolean) => void;
+  llmProvider: LlmProvider;
+  onLlmProviderChange: (provider: LlmProvider) => void;
+  llmModel: string;
+  onLlmModelChange: (model: string) => void;
 }
 
 function AgentUI({
@@ -33,6 +39,10 @@ function AgentUI({
   onLangModeChange,
   preemptive,
   onPreemptiveChange,
+  llmProvider,
+  onLlmProviderChange,
+  llmModel,
+  onLlmModelChange,
 }: AgentUIProps) {
   const { state: agentState } = useAgent();
   const { messages, detectedLanguage } = useTranscripts();
@@ -100,9 +110,13 @@ function AgentUI({
           />
           <SessionSettings
             langMode={langMode}
-onLangModeChange={onLangModeChange}
+            onLangModeChange={onLangModeChange}
             preemptive={preemptive}
-onPreemptiveChange={onPreemptiveChange}
+            onPreemptiveChange={onPreemptiveChange}
+            llmProvider={llmProvider}
+            onLlmProviderChange={onLlmProviderChange}
+            llmModel={llmModel}
+            onLlmModelChange={onLlmModelChange}
           />
           <AgentInsights
             sessionMeta={sessionMeta}
@@ -175,16 +189,27 @@ onPreemptiveChange={onPreemptiveChange}
 export default function App() {
   const [langMode, setLangMode] = useState<LanguageSwitchMode>('policy');
   const [preemptive, setPreemptive] = useState(true);
+  const [llmProvider, setLlmProvider] = useState<LlmProvider>('groq');
+  const [llmModel, setLlmModel] = useState<string>(
+    PROVIDER_MODELS.groq[0],
+  );
   const sessionOptions = useMemo(
     () => ({
       participantAttributes: {
         lang_mode: langMode,
         preemptive: preemptive ? '1' : '0',
+        llm_provider: llmProvider,
+        llm_model: llmModel,
       },
     }),
-    [langMode, preemptive],
+    [langMode, preemptive, llmProvider, llmModel],
   );
   const session = useSession(tokenSource, sessionOptions);
+
+  const handleProviderChange = (provider: LlmProvider) => {
+    setLlmProvider(provider);
+    setLlmModel(PROVIDER_MODELS[provider][0]);
+  };
 
   return (
     <AgentSessionProvider session={session}>
@@ -194,6 +219,10 @@ export default function App() {
         onLangModeChange={setLangMode}
         preemptive={preemptive}
         onPreemptiveChange={setPreemptive}
+        llmProvider={llmProvider}
+        onLlmProviderChange={handleProviderChange}
+        llmModel={llmModel}
+        onLlmModelChange={setLlmModel}
       />
     </AgentSessionProvider>
   );

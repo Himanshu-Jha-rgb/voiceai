@@ -157,7 +157,15 @@ function SessionBadges({ meta }: { meta: SessionMeta | null }) {
   }
   return (
     <div className="flex flex-wrap gap-1 justify-center">
-      <Badge icon={Cpu} label={meta.llm_model} className="border-border bg-card" />
+      <Badge
+        icon={Cpu}
+        label={
+          meta.llm_provider
+            ? `${meta.llm_provider} · ${meta.llm_model}`
+            : meta.llm_model
+        }
+        className="border-border bg-card"
+      />
       <span className="text-muted-foreground/40 text-[11px] leading-6">|</span>
       <Badge icon={ScanText} label={meta.stt_model} className="border-border bg-card" />
       <span className="text-muted-foreground/40 text-[11px] leading-6">|</span>

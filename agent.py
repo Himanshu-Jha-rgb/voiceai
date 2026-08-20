@@ -28,10 +28,6 @@ from config import (
     DEFAULT_LANGUAGE,
     LANGUAGE_SWITCH_MODE,
     STT_MODEL,
-    LLM_MODEL,
-    LLM_PROVIDER,
-    OPENAI_MODEL,
-    GROQ_MODEL,
     TTS_MODEL,
     TTS_SAMPLE_RATE,
     TTS_PACE,
@@ -79,7 +75,13 @@ from voice_agent.conversation import (
     extract_requested_language,
     has_language_signal,
 )
-from voice_agent.providers import active_model, create_llm, create_stt
+from voice_agent.providers import (
+    active_model,
+    create_llm,
+    create_stt,
+    resolve_model,
+    resolve_provider,
+)
 from voice_agent.telemetry import create_langfuse_client
 
 langfuse_client = create_langfuse_client()
@@ -154,7 +156,7 @@ def _create_tts(language_code: str = "hi-IN") -> sarvam.TTS:
 
 
 class SchoolVoiceAgent(Agent):
-    def __init__(self) -> None:
+    def __init__(self, llm_provider: str | None = None, llm_model: str | None = None) -> None:
         # Single TTS instance — Bulbul v3 is a unified model; language is
         # switched per-turn via update_options(), not via new instances.
         self._tts = _create_tts("hi-IN")
@@ -187,14 +189,16 @@ class SchoolVoiceAgent(Agent):
         # Per-session settings (defaults from env; overridden in the entrypoint
         # from the frontend's participant attributes).
         self._lang_switch_mode: str = LANGUAGE_SWITCH_MODE
+        self._llm_provider: str = resolve_provider(llm_provider)
+        self._llm_model: str = resolve_model(self._llm_provider, llm_model)
 
         self._language_policy = LanguagePolicy(confirmed_lang="hi-IN")
 
         # Tracked background tasks — bounded concurrency, cleanup-aware
         self._bg_tasks: set[asyncio.Task] = set()
 
-        llm = create_llm()
-        logger.info("Using %s LLM — model: %s", LLM_PROVIDER.title(), active_model())
+        llm = create_llm(self._llm_provider, self._llm_model)
+        logger.info("Using %s LLM — model: %s", self._llm_provider.title(), self._llm_model)
 
         super().__init__(
             instructions=SYSTEM_PROMPT,
@@ -601,7 +605,7 @@ class SchoolVoiceAgent(Agent):
             generation = langfuse_client.start_observation(
                 as_type="generation",
                 name="llm-generation",
-                model=active_model(),
+                model=f"{self._llm_provider}/{self._llm_model}",
                 input=inp,
                 trace_context=trace_context(self._session_trace_id, self._active_turn_span_id),
             )
@@ -714,7 +718,8 @@ class SchoolVoiceAgent(Agent):
             return
         payload = json.dumps({
             "type": "session_meta",
-            "llm_model": active_model(),
+            "llm_provider": self._llm_provider,
+            "llm_model": self._llm_model,
             "stt_model": STT_MODEL,
             "tts_model": TTS_MODEL,
             "language_switch_mode": self._lang_switch_mode,
@@ -738,7 +743,10 @@ class SchoolVoiceAgent(Agent):
     async def _generate_rolling_summary(self, old_items: list) -> None:
         try:
             summary = await summarize_conversation(
-                old_items, LLM_PROVIDER, previous_summary=self._rolling_summary
+                old_items,
+                self._llm_provider,
+                llm_model=self._llm_model,
+                previous_summary=self._rolling_summary,
             )
             if summary:
                 self._rolling_summary = summary
@@ -761,11 +769,16 @@ async def entrypoint(ctx: JobContext) -> None:
     session_attrs = await _read_session_attributes(ctx)
     lang_switch_mode = _resolve_lang_mode(session_attrs.get("lang_mode"))
     preemptive_enabled = _resolve_preemptive(session_attrs.get("preemptive"))
+    llm_provider = resolve_provider(session_attrs.get("llm_provider"))
+    llm_model = resolve_model(llm_provider, session_attrs.get("llm_model"))
     if session_attrs:
         logger.info(
-            "Session settings from frontend: lang_mode=%s preemptive=%s",
+            "Session settings from frontend: lang_mode=%s preemptive=%s "
+            "llm_provider=%s llm_model=%s",
             lang_switch_mode,
             preemptive_enabled,
+            llm_provider,
+            llm_model,
         )
 
     session_trace_id = langfuse_client.create_trace_id()
@@ -775,7 +788,8 @@ async def entrypoint(ctx: JobContext) -> None:
         trace_context=trace_context(session_trace_id),
         metadata={
             "room": ctx.room.name,
-            "llm_model": active_model(),
+            "llm_provider": llm_provider,
+            "llm_model": llm_model,
             "stt_model": STT_MODEL,
             "tts_model": TTS_MODEL,
             "language_switch_mode": lang_switch_mode,
@@ -783,7 +797,7 @@ async def entrypoint(ctx: JobContext) -> None:
         }
     )
 
-    agent = SchoolVoiceAgent()
+    agent = SchoolVoiceAgent(llm_provider=llm_provider, llm_model=llm_model)
     agent._session_trace_id = session_trace_id
     agent._root_span_id = root_span.id
     agent._active_turn_span_id = root_span.id

@@ -46,6 +46,7 @@ def _format_items_as_text(items: list) -> str:
 async def summarize_conversation(
     items: list,
     llm_provider: str = "sarvam",
+    llm_model: str | None = None,
     previous_summary: Optional[str] = None,
 ) -> Optional[str]:
     """Produce a 2-3 sentence summary of older conversation items.
@@ -70,7 +71,7 @@ async def summarize_conversation(
 
     try:
         if llm_provider in {"openai", "groq"}:
-            summary = await _summarize_openai_compatible(text, llm_provider)
+            summary = await _summarize_openai_compatible(text, llm_provider, llm_model)
         else:
             summary = await _summarize_sarvam(text)
     except Exception as e:
@@ -89,7 +90,9 @@ async def summarize_conversation(
     return summary
 
 
-async def _summarize_openai_compatible(text: str, provider: str) -> Optional[str]:
+async def _summarize_openai_compatible(
+    text: str, provider: str, model: str | None = None,
+) -> Optional[str]:
     try:
         from openai import AsyncOpenAI
     except ImportError:
@@ -109,8 +112,13 @@ async def _summarize_openai_compatible(text: str, provider: str) -> Optional[str
         max_retries=2,
         timeout=20,
     )
+    if not model:
+        model = (
+            os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+            if is_groq
+            else os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        )
     response = await client.chat.completions.create(
-        model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b") if is_groq else os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         messages=[
             {"role": "system", "content": _SUMMARIZATION_PROMPT},
             {"role": "user", "content": text},

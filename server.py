@@ -22,7 +22,13 @@ app.add_middleware(
 )
 
 
-_SCHEMA = {"lang_mode": ("policy", "sarvam"), "preemptive": ("1", "0", "true", "false")}
+_SCHEMA = {
+    "lang_mode": ("policy", "sarvam"),
+    "preemptive": ("1", "0", "true", "false"),
+    "llm_provider": ("sarvam", "openai", "groq"),
+    # Model is free-form (providers add models faster than catalogs update).
+    "llm_model": ("*",),
+}
 
 
 def _session_attributes(**kwargs) -> dict[str, str]:
@@ -33,7 +39,7 @@ def _session_attributes(**kwargs) -> dict[str, str]:
         if raw is None:
             continue
         value = str(raw).strip().lower()
-        if value in [a.lower() for a in allowed]:
+        if "*" in allowed or value in [a.lower() for a in allowed]:
             attrs[key] = value
     if "preemptive" in attrs:
         attrs["preemptive"] = "1" if attrs["preemptive"] in ("1", "true") else "0"
@@ -46,6 +52,8 @@ async def get_token(
     participant_name: str | None = None,
     lang_mode: str | None = None,
     preemptive: str | None = None,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
 ):
     """Generate a LiveKit access token for the frontend to join a room."""
     # A completed agent session is not reused by LiveKit's React useSession
@@ -59,7 +67,12 @@ async def get_token(
         api_key=os.environ["LIVEKIT_API_KEY"],
         api_secret=os.environ["LIVEKIT_API_SECRET"],
     ).with_identity(participant_name).with_name(participant_name).with_attributes(
-        _session_attributes(lang_mode=lang_mode, preemptive=preemptive)
+        _session_attributes(
+            lang_mode=lang_mode,
+            preemptive=preemptive,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+        )
     ).with_grants(
         api.VideoGrants(
             room_join=True,
